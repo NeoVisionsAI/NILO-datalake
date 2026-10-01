@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from nilo_datalake.config import Settings
 from nilo_datalake.errors import ConfigError
 from nilo_datalake.paths import sanitize_site_id
+from nilo_datalake.sources.ssh_pull import validate_remote, validate_ssh_command
 
 _SECRET_FIELDS = (
     ("ingest", "api_key"),
@@ -18,6 +19,8 @@ _SECRET_FIELDS = (
     ("pull", "http", "api_key"),
     ("edge", "api_key"),
     ("console", "password"),
+    ("console", "password_hash"),
+    ("console", "session_secret"),
 )
 
 
@@ -35,6 +38,10 @@ def view_settings(settings: Settings) -> dict:
         if cursor.get(leaf):
             secrets_set.append(".".join(path))
         cursor[leaf] = ""
+    if "console.password" not in secrets_set and (
+        settings.console.password or settings.console.password_hash
+    ):
+        secrets_set.append("console.password")
     return {
         "settings": data,
         "secrets_set": secrets_set,
@@ -140,8 +147,16 @@ def _check(settings: Settings) -> None:
         raise ConfigError(str(exc)) from exc
     if not settings.console.username.strip() or "|" in settings.console.username:
         raise ConfigError("console username is required and cannot contain |")
-    if not settings.console.password:
+    if not settings.console.password and not settings.console.password_hash:
         raise ConfigError("console password is required")
+    try:
+        validate_ssh_command(settings.pull.ssh.ssh_command)
+        for source in settings.pull.ssh.sources:
+            validate_remote(source.remote)
+    except ConfigError:
+        raise
+    if settings.ingest.max_object_bytes <= 0:
+        raise ConfigError("ingest max object size must be positive")
     try:
         CronTrigger.from_crontab(settings.pull.schedule, timezone=ZoneInfo(settings.pull.timezone))
     except Exception as exc:

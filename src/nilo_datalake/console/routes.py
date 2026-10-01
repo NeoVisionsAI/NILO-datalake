@@ -21,13 +21,18 @@ from pydantic import BaseModel
 from nilo_datalake.config import Settings, save_settings
 from nilo_datalake.console.store import apply_form, view_settings
 from nilo_datalake.errors import ConfigError
+from nilo_datalake.passwords import verify_password
 from nilo_datalake.service import build_context
-from nilo_datalake.sync import start_scheduler
+from nilo_datalake.sources.http_api import assert_download_url
+from nilo_datalake.sync import run_sync, start_scheduler
 
 log = logging.getLogger(__name__)
 
 COOKIE = "nilo_console"
 _MAX_AGE = 12 * 60 * 60
+_LOCK_AFTER = 8
+_LOCK_SECONDS = 60.0
+_failures: dict[str, list[float]] = {}
 
 
 class LoginBody(BaseModel):
@@ -49,15 +54,20 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
     def login(body: LoginBody, request: Request):
         settings = _settings(request)
         _ensure_enabled(settings)
-        if not _same(body.username, settings.console.username) or not _same(body.password, settings.console.password):
+        attempt = f"{request.client.host if request.client else '-'}|{body.username}"
+        if _locked(attempt):
+            raise HTTPException(status_code=429, detail="too many attempts; wait a minute and try again")
+        if not _same(body.username, settings.console.username) or not _password_ok(body.password, settings):
+            _record_failure(attempt)
             raise HTTPException(status_code=401, detail="unknown username or password")
+        _failures.pop(attempt, None)
         response = {"ok": True, "username": settings.console.username}
         from fastapi.responses import JSONResponse
 
         result = JSONResponse(response)
         result.set_cookie(
             COOKIE,
-            _sign(settings.console.username, settings.console.password),
+            _sign(settings.console.username, _cookie_key(settings)),
             max_age=_MAX_AGE,
             httponly=True,
             samesite="lax",
@@ -104,7 +114,7 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
         fresh = request.app.state.ctx.settings
         result.set_cookie(
             COOKIE,
-            _sign(fresh.console.username, fresh.console.password),
+            _sign(fresh.console.username, _cookie_key(fresh)),
             max_age=_MAX_AGE,
             httponly=True,
             samesite="lax",
@@ -128,6 +138,32 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
             log.exception("console connection test failed kind=%s", kind)
             return {"ok": False, "detail": str(exc)}
         return {"ok": True, "detail": detail}
+
+    @router.post("/api/sync")
+    def sync_now(request: Request) -> dict:
+        """Start one pull in the background. The schedule is unchanged."""
+
+        _require(request)
+        running = getattr(request.app.state, "sync_thread", None)
+        if running is not None and running.is_alive():
+            return {"started": False, "reason": "sync already running"}
+
+        def _run() -> None:
+            request.app.state.last_sync = run_sync(request.app.state.ctx)
+
+        thread = threading.Thread(target=_run, name="nilo-sync", daemon=True)
+        request.app.state.sync_thread = thread
+        thread.start()
+        return {"started": True}
+
+    @router.get("/api/sync")
+    def sync_status(request: Request) -> dict:
+        _require(request)
+        running = getattr(request.app.state, "sync_thread", None)
+        return {
+            "running": running is not None and running.is_alive(),
+            "last": getattr(request.app.state, "last_sync", None),
+        }
 
     @router.post("/api/restart")
     def restart(request: Request) -> dict:
@@ -196,12 +232,17 @@ def _probe(kind: str, settings: Settings) -> str:
         headers = {}
         if settings.pull.http.api_key:
             headers["Authorization"] = f"Bearer {settings.pull.http.api_key}"
+        target = settings.pull.http.base_url.rstrip("/") + "/changes"
+        assert_download_url(target)
         response = httpx.get(
-            settings.pull.http.base_url.rstrip("/") + "/changes",
+            target,
             params={"since": "", "limit": 1},
             headers=headers,
             timeout=10,
+            follow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise ConfigError(f"backend redirected to {response.headers.get('location', '')}")
         if response.status_code >= 500:
             raise ConfigError(f"backend returned {response.status_code}")
         return f"backend returned {response.status_code}"
@@ -226,6 +267,33 @@ def _ensure_enabled(settings: Settings) -> None:
         raise HTTPException(status_code=404, detail="console is disabled")
 
 
+def _password_ok(presented: str, settings: Settings) -> bool:
+    console = settings.console
+    if console.password:
+        return _same(presented, console.password)
+    if console.password_hash:
+        return verify_password(presented, console.password_hash)
+    return False
+
+
+def _cookie_key(settings: Settings) -> str:
+    return settings.console.session_secret or settings.console.password
+
+
+def _locked(key: str) -> bool:
+    now = time.time()
+    recent = [stamp for stamp in _failures.get(key, []) if now - stamp < _LOCK_SECONDS]
+    if recent:
+        _failures[key] = recent
+    elif key in _failures:
+        _failures.pop(key, None)
+    return len(recent) >= _LOCK_AFTER
+
+
+def _record_failure(key: str) -> None:
+    _failures.setdefault(key, []).append(time.time())
+
+
 def _sign(username: str, password: str) -> str:
     expires = int(time.time()) + _MAX_AGE
     body = f"{username}|{expires}"
@@ -245,7 +313,7 @@ def _read(token: str, settings: Settings) -> str | None:
             return None
     except ValueError:
         return None
-    expected = hmac.new(settings.console.password.encode(), f"{username}|{expires}".encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(_cookie_key(settings).encode(), f"{username}|{expires}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return None
     return username

@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -41,6 +42,7 @@ from nilo_datalake.tracing import begin_trace, bound, end_trace
 log = logging.getLogger(__name__)
 
 _MAX_PATH_HEADER = 512
+_BATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def create_app(ctx: Context, config_path: Path | None = None) -> FastAPI:
@@ -55,13 +57,20 @@ def create_app(ctx: Context, config_path: Path | None = None) -> FastAPI:
         if scheduler is not None:
             scheduler.shutdown(wait=False)
 
-    app = FastAPI(title="NILO datalake", version=__version__, lifespan=lifespan)
+    app = FastAPI(
+        title="NILO datalake",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.state.ctx = ctx
 
     @app.middleware("http")
     async def trace_request(request: Request, call_next):
         if request.url.path in {"/v1/health", "/", "/console"} or request.url.path.startswith("/console/static"):
-            return await call_next(request)
+            return _secure(await call_next(request), request)
         incoming = request.headers.get("x-trace-id", "")
         trace_id, token = begin_trace(incoming if _valid_trace_id(incoming) else None)
         started = time.perf_counter()
@@ -83,7 +92,7 @@ def create_app(ctx: Context, config_path: Path | None = None) -> FastAPI:
                 else:
                     log.info("status=%s duration_ms=%s", response.status_code, elapsed)
             response.headers["X-Trace-Id"] = trace_id
-            return response
+            return _secure(response, request)
         finally:
             end_trace(token)
 
@@ -95,6 +104,16 @@ def create_app(ctx: Context, config_path: Path | None = None) -> FastAPI:
         _install_routes(app)
     install_console(app, config_path)
     return app
+
+
+def _secure(response, request: Request):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    if request.url.path.startswith("/console"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _valid_trace_id(value: str) -> bool:
@@ -116,8 +135,8 @@ def _install_routes(app: FastAPI) -> None:
         try:
             site_id = sanitize_site_id(str(body.get("site_id") or ctx.settings.site_id))
             source = str(body.get("source") or "push")
-            if not source.strip() or len(source) > 64:
-                raise InvalidPathError("source name is missing or too long")
+            if not source.strip() or len(source) > 64 or any(ord(char) < 32 for char in source):
+                raise InvalidPathError("source name is missing, too long, or contains control characters")
         except InvalidPathError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
@@ -151,8 +170,13 @@ def _install_routes(app: FastAPI) -> None:
         kind = normalize_kind(request.headers.get("x-kind"), logical)
         content_type = request.headers.get("content-type")
         declared = _content_length(request)
+        if declared is None:
+            raise HTTPException(status_code=411, detail="Content-Length is required")
+        limit = ctx.settings.ingest.max_object_bytes
+        if declared > limit:
+            raise HTTPException(status_code=413, detail="object exceeds ingest.max_object_bytes")
         volume = ctx.volumes.get(batch["volume_id"])
-        if declared is not None and ctx.volumes.available_bytes(
+        if ctx.volumes.available_bytes(
             next(item for item in ctx.settings.storage.volumes if item.id == volume.id)
         ) < declared:
             raise HTTPException(status_code=507, detail="volume does not have enough free space")
@@ -170,11 +194,16 @@ def _install_routes(app: FastAPI) -> None:
                 async for chunk in request.stream():
                     if not chunk:
                         continue
+                    size += len(chunk)
+                    if size > declared:
+                        raise HTTPException(status_code=400, detail="upload is larger than Content-Length")
                     digest.update(chunk)
                     handle.write(chunk)
-                    size += len(chunk)
                 handle.flush()
                 os.fsync(handle.fileno())
+        except HTTPException:
+            partial.unlink(missing_ok=True)
+            raise
         except OSError as exc:
             partial.unlink(missing_ok=True)
             if exc.errno == 28:
@@ -201,6 +230,7 @@ def _install_routes(app: FastAPI) -> None:
     @app.post("/v1/batches/{batch_id}/commit", dependencies=[Depends(_authorized)])
     def commit_batch(batch_id: str) -> dict:
         ctx: Context = app.state.ctx
+        _check_batch_id(batch_id)
         batch = ctx.catalog.get_batch(batch_id)
         if batch is None:
             raise HTTPException(status_code=404, detail="batch not found")
@@ -275,6 +305,7 @@ def _install_routes(app: FastAPI) -> None:
     @app.get("/v1/batches/{batch_id}", dependencies=[Depends(_authorized)])
     def get_batch(batch_id: str) -> dict:
         ctx: Context = app.state.ctx
+        _check_batch_id(batch_id)
         batch = ctx.catalog.get_batch(batch_id)
         if batch is None:
             raise HTTPException(status_code=404, detail="batch not found")
@@ -315,15 +346,25 @@ def _authorized(request: Request) -> None:
         return
     header = request.headers.get("authorization", "")
     prefix = "Bearer "
-    if not header.startswith(prefix):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-    presented = header[len(prefix) :]
-    expected = settings.ingest.api_key
-    if not hmac.compare_digest(presented.encode(), expected.encode()):
+    if not header.startswith(prefix) or not _token_matches(header[len(prefix) :], settings.ingest.api_key):
         raise HTTPException(status_code=401, detail="invalid bearer token")
 
 
+def _token_matches(presented: str, expected: str) -> bool:
+    left = presented.encode()
+    right = expected.encode()
+    if not right or len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
+def _check_batch_id(batch_id: str) -> None:
+    if not _BATCH_ID.fullmatch(batch_id or ""):
+        raise HTTPException(status_code=400, detail="invalid batch id")
+
+
 def _open_batch(ctx: Context, batch_id: str):
+    _check_batch_id(batch_id)
     batch = ctx.catalog.get_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="batch not found")

@@ -14,6 +14,7 @@ the catalog remembers a finished session, so later runs do not download it again
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import shutil
 import subprocess
@@ -27,6 +28,11 @@ from nilo_datalake.paths import sanitize_session_id
 from nilo_datalake.service import Context
 
 log = logging.getLogger(__name__)
+
+_SSH_HOST = re.compile(
+    r"^(?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9.-]{0,253}(?::[0-9]{1,5})?$"
+)
+_SHELL_CHARS = set("\n\r;&|<>`$")
 
 
 def pull_ssh(ctx: Context) -> dict:
@@ -79,8 +85,53 @@ def pull_ssh(ctx: Context) -> dict:
     }
 
 
+def validate_ssh_command(command: str) -> None:
+    """Reject an ``ssh`` command that rsync would hand to a shell."""
+
+    if not command or not command.strip():
+        raise ConfigError("ssh command is empty")
+    if any(char in _SHELL_CHARS for char in command):
+        raise ConfigError("ssh command must not contain shell syntax")
+    try:
+        parts = shlex.split(command)
+    except ValueError as exc:
+        raise ConfigError(f"ssh command is not a valid argument list: {exc}") from exc
+    if not parts:
+        raise ConfigError("ssh command is empty")
+
+
+def validate_remote(spec: str) -> tuple[str | None, str]:
+    """Check a remote spec and return ``(host, path)``."""
+
+    host, path = split_remote(spec)
+    path = path.rstrip("/") or "/"
+    if host is not None and not _SSH_HOST.fullmatch(host):
+        raise ConfigError(f"ssh host contains unsupported characters: {host}")
+    _absolute_path(path)
+    return host, path
+
+
+def assert_deletable(path: str) -> None:
+    """Refuse to remove a filesystem root or a very short directory."""
+
+    path = path.rstrip("/") or "/"
+    _absolute_path(path)
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 3:
+        raise ConfigError(f"refusing to delete a short path: {path}")
+
+
+def _absolute_path(path: str) -> None:
+    if not path.startswith("/") or "\x00" in path:
+        raise ConfigError(f"ssh path must be absolute: {path}")
+    parts = path.split("/")
+    if any(part in ("", "..") for part in parts[1:]):
+        raise ConfigError(f"ssh path must not contain empty or parent segments: {path}")
+
+
 def _pull_source(ctx: Context, source, *, batch_id: str) -> dict:
-    host, remote_root = split_remote(source.remote)
+    validate_ssh_command(ctx.settings.pull.ssh.ssh_command)
+    host, remote_root = validate_remote(source.remote)
     landing = ctx.volumes.pick_largest()
     scratch = landing.root / "staging"
     probe = scratch / "_ssh_probe"
@@ -234,10 +285,11 @@ def _rsync(ctx: Context, source: str, destination: str, *, extra: list[str] | No
 
 
 def _delete_remote(ctx: Context, host: str | None, path: str) -> None:
+    assert_deletable(path)
     if host is None:
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path)
         return
-    command = shlex.split(ctx.settings.pull.ssh.ssh_command) + [host, "rm", "-rf", "--", path]
+    command = shlex.split(ctx.settings.pull.ssh.ssh_command) + ["--", host, "rm", "-rf", "--", path]
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()

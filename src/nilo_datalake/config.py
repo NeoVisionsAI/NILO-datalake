@@ -47,6 +47,8 @@ class IngestConfig(BaseModel):
     port: int = 8088
     api_key: str = ""
     allow_insecure_no_auth: bool = False
+    # One object, not a whole session. 32 GiB covers a long capture file.
+    max_object_bytes: int = 32 * _GIB
 
 
 class MongoCollectionConfig(BaseModel):
@@ -133,11 +135,18 @@ class TraceConfig(BaseModel):
 
 
 class ConsoleConfig(BaseModel):
-    """Login for the web console. The password is stored in the runtime settings file."""
+    """Login for the web console.
+
+    ``password`` is accepted from the form and from the environment on first
+    boot. ``save_settings`` replaces it with ``password_hash`` and keeps a
+    random ``session_secret`` for the login cookie.
+    """
 
     enabled: bool = True
     username: str = "admin"
     password: str = ""
+    password_hash: str = ""
+    session_secret: str = ""
 
 
 class EdgeConfig(BaseModel):
@@ -235,12 +244,27 @@ def load_file_only(path: Path) -> Settings:
 
 
 def save_settings(path: Path, settings: Settings) -> None:
-    """Write settings atomically. The file is readable only by its owner."""
+    """Write settings atomically. The file is readable only by its owner.
+
+    A plaintext console password is hashed before it reaches the file. The
+    in-memory settings keep that password so the process that just saved can
+    still verify a login. The session secret is copied back when it was generated
+    for this write, so the cookie and the file use the same key.
+    """
 
     import yaml
 
+    from nilo_datalake.passwords import hash_password, new_session_secret
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = settings.model_dump(mode="json")
+    sealed = settings.model_copy(deep=True)
+    if sealed.console.password:
+        sealed.console.password_hash = hash_password(sealed.console.password)
+        sealed.console.password = ""
+    if not sealed.console.session_secret:
+        sealed.console.session_secret = new_session_secret()
+        settings.console.session_secret = sealed.console.session_secret
+    payload = sealed.model_dump(mode="json")
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
     os.chmod(temporary, 0o600)
@@ -281,6 +305,8 @@ def redact(settings: Settings) -> dict:
     data["pull"]["http"]["api_key"] = _mask(data["pull"]["http"]["api_key"])
     data["edge"]["api_key"] = _mask(data["edge"]["api_key"])
     data["console"]["password"] = _mask(data["console"]["password"])
+    data["console"]["password_hash"] = _mask(data["console"]["password_hash"])
+    data["console"]["session_secret"] = _mask(data["console"]["session_secret"])
     return data
 
 

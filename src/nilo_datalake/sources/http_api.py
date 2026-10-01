@@ -15,7 +15,7 @@ import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 import httpx
@@ -44,7 +44,7 @@ def pull_http(ctx: Context, client: httpx.Client | None = None) -> dict:
         client = httpx.Client(
             headers=headers,
             timeout=config.timeout_seconds,
-            follow_redirects=True,
+            follow_redirects=False,
         )
     batch_id = uuid4().hex
     ctx.catalog.create_batch(
@@ -64,6 +64,7 @@ def pull_http(ctx: Context, client: httpx.Client | None = None) -> dict:
                 _changes_url(config.base_url),
                 params={"since": watermark, "limit": config.page_limit},
             )
+            _reject_redirect(response)
             response.raise_for_status()
             page = response.json()
             items = page.get("items") or []
@@ -188,11 +189,19 @@ def _store_remote_object(
     absolute = download_url.startswith(("http://", "https://"))
     try:
         if absolute:
-            with httpx.stream("GET", download_url, timeout=ctx.settings.pull.http.timeout_seconds, follow_redirects=True) as response:
+            assert_download_url(download_url)
+            with httpx.stream(
+                "GET",
+                download_url,
+                timeout=ctx.settings.pull.http.timeout_seconds,
+                follow_redirects=False,
+            ) as response:
+                _reject_redirect(response)
                 response.raise_for_status()
                 _write_response(response, path)
         else:
             with client.stream("GET", join_download_url(base_url, download_url)) as response:
+                _reject_redirect(response)
                 response.raise_for_status()
                 _write_response(response, path)
         captured = _parse_time(item.get("captured_at"))
@@ -219,6 +228,25 @@ def _store_remote_object(
 
 def _changes_url(base_url: str) -> str:
     return base_url.rstrip("/") + "/changes"
+
+
+def assert_download_url(url: str) -> None:
+    """Allow an absolute download URL that does not carry credentials or another scheme.
+
+    Redirects are not followed. A presigned link stays on the host it names, and
+    the archive API key is never attached to that request.
+    """
+
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"download URL must be http or https: {url}")
+    if parsed.username or parsed.password:
+        raise ValueError("download URL must not include credentials")
+
+
+def _reject_redirect(response: httpx.Response) -> None:
+    if 300 <= response.status_code < 400:
+        raise ValueError(f"refusing to follow a redirect ({response.status_code})")
 
 
 def join_download_url(base_url: str, download_url: str) -> str:

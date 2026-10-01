@@ -141,10 +141,10 @@ The stack is three long-running containers plus a one-shot that creates the `nil
 
 | Service | Address |
 | --- | --- |
-| datalake | http://127.0.0.1:8088 |
-| MinIO API | http://127.0.0.1:9000 |
-| MinIO console | http://127.0.0.1:9001 |
-| MongoDB | 127.0.0.1:27017 |
+| datalake | http://127.0.0.1:8088 (published on the host interfaces so the backend and the MiniPC can reach it) |
+| MinIO API | http://127.0.0.1:9000 (localhost only) |
+| MinIO console | http://127.0.0.1:9001 (localhost only) |
+| MongoDB | 127.0.0.1:27017 (localhost only) |
 
 The archive, the catalog, the traces, and the runtime settings live in the `datalake` volume, mounted at `/data` inside the container. The image starts from `config/settings.docker.yaml`. On the first start, values from `.env` are copied into `/data/config/settings.yaml`. After that file exists, the [console](#console) is the source of truth: editing `.env` does not change a running archive. Delete the `datalake` volume to seed again. Change the development key before pointing this at a hospital.
 
@@ -160,7 +160,7 @@ docker compose exec datalake nilo-datalake status
 
 Open `http://127.0.0.1:8088/console` (the site root redirects there). The default login is the `NILO_CONSOLE_USERNAME` and `NILO_CONSOLE_PASSWORD` pair from `.env` (`admin` / `nilo-dev-key` until you change them). That password is only for the console. The ingest API key is separate.
 
-The page edits the schedule, disk paths, MongoDB, MinIO, the backend API, SSH sources, the ingest key, the edge agent, and the console account. A secret field that is left blank keeps the value already stored. **Save** writes `/data/config/settings.yaml` and applies the schedule immediately. Changing the ingest bind host or port is stored at once and takes effect after **Restart service** (the container exits and Docker starts it again).
+The page edits the schedule, disk paths, MongoDB, MinIO, the backend API, SSH sources, the ingest key, the edge agent, and the console account. A secret field that is left blank keeps the value already stored. **Save** writes `/data/config/settings.yaml` and applies the schedule immediately. The console password is stored as a scrypt hash; the file does not keep the plaintext. Changing the ingest bind host or port is stored at once and takes effect after **Restart service** (the container exits and Docker starts it again). **Run sync now** starts one pull without waiting for the cron.
 
 ## Traces
 
@@ -384,7 +384,13 @@ A sync that is already running ignores a second trigger. Pulling a large day mus
 
 ## Security
 
-Put the API key in the environment or in a file readable only by the `nilo` user. Bind the service to the hospital LAN and terminate TLS in a reverse proxy if the traffic leaves that LAN. `allow_insecure_no_auth` is for a private development machine.
+Put the API key in the environment or in a file readable only by the `nilo` user. Bind the service to the hospital LAN and terminate TLS in a reverse proxy if the traffic leaves that LAN. `allow_insecure_no_auth` is for a private development machine. OpenAPI and the interactive docs are not served.
+
+An upload must send `Content-Length`. The body is rejected when it grows past that length or past `ingest.max_object_bytes` (default 32 GiB). Eight failed console logins from the same address lock that username for a minute. The console cookie is signed with a random session secret, and the password is stored as a scrypt hash.
+
+Pulling the backend API does not follow redirects, so the bearer token stays on `pull.http.base_url`. An absolute `download_url` is fetched without that token, and only when it is `http` or `https` with no userinfo. SSH remotes reject a host that looks like a shell or an option, and `delete_after` refuses to remove a path with fewer than three directories.
+
+MongoDB and MinIO publish their host ports on `127.0.0.1` only. The archive API stays reachable from the LAN because the backend and the MiniPC push to it.
 
 Logs contain session ids, logical paths, and byte counts. They do not contain file bodies or document contents. Disk encryption, the NAS access control list, and who may SSH to the spool are operational controls this process does not provide.
 

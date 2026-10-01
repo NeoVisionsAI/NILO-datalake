@@ -125,6 +125,7 @@ function renderSection() {
       check("Watch the rsync/scp inbox", settings.inbox.enabled, (value) => { settings.inbox.enabled = value; }),
       field("Inbox poll (seconds)", number(settings.inbox.poll_seconds, (value) => { settings.inbox.poll_seconds = value; })),
       field("Abandon unfinished uploads after (hours)", number(settings.inbox.abandon_after_hours, (value) => { settings.inbox.abandon_after_hours = value; })),
+      button("Run sync now", "ghost", runSync),
     );
   }
   if (section === "storage") {
@@ -300,6 +301,16 @@ async function save() {
       ? "Saved. Restart the service to bind the new host or port."
       : "Saved. The schedule and credentials are already in use.",
   };
+  renderApp();
+}
+
+async function runSync() {
+  const response = await fetch("/console/api/sync", { method: "POST" });
+  if (response.status === 401) return renderLogin();
+  const body = await response.json();
+  message = body.started
+    ? { kind: "ok", text: "Sync started. It keeps running after you leave this page." }
+    : { kind: "warn", text: body.reason || "Sync did not start" };
   renderApp();
 }
 
