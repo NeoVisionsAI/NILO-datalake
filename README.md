@@ -98,7 +98,10 @@ src/nilo_datalake/
   catalog.py        SQLite index and JSONL journal
   sources/          MongoDB, MinIO, backend HTTP, SSH/rsync
 config/settings.example.yaml
+config/settings.docker.yaml
 deploy/systemd/     unit files for the NAS and the MiniPC
+deploy.sh           installs host packages and starts the Docker stack
+docker-compose.yml  datalake, MongoDB, and MinIO
 ```
 
 ## Install
@@ -124,11 +127,64 @@ sudo cp .env.example /etc/nilo-datalake/datalake.env
 
 `check-config` prints the resolved settings with secrets removed.
 
+## Docker
+
+`deploy.sh` is the first-boot path. It installs the host packages that are missing (`curl`, `rsync`, `openssh-client`, Docker, and the Compose plugin), writes `.env` from `config/docker.env.example` when that file is absent, and starts the stack. A later run only installs what is still missing and checks that each service answers. A failed check is printed in red with the command output and the container logs under it.
+
+MongoDB and MinIO run as containers. Debian does not ship current packages for either, so the script does not `apt install` them.
+
+```bash
+./deploy.sh
+```
+
+The stack is three long-running containers plus a one-shot that creates the `nilo-media` bucket:
+
+| Service | Address |
+| --- | --- |
+| datalake | http://127.0.0.1:8088 |
+| MinIO API | http://127.0.0.1:9000 |
+| MinIO console | http://127.0.0.1:9001 |
+| MongoDB | 127.0.0.1:27017 |
+
+The archive, the catalog, the traces, and the runtime settings live in the `datalake` volume, mounted at `/data` inside the container. The image starts from `config/settings.docker.yaml`. On the first start, values from `.env` are copied into `/data/config/settings.yaml`. After that file exists, the [console](#console) is the source of truth: editing `.env` does not change a running archive. Delete the `datalake` volume to seed again. Change the development key before pointing this at a hospital.
+
+```bash
+docker compose logs -f datalake
+docker compose exec datalake nilo-datalake traces
+docker compose exec datalake nilo-datalake status
+```
+
+`docker compose up -d` is enough on a machine where Docker is already installed. `deploy.sh` is the command that also prepares the host.
+
+## Console
+
+Open `http://127.0.0.1:8088/console` (the site root redirects there). The default login is the `NILO_CONSOLE_USERNAME` and `NILO_CONSOLE_PASSWORD` pair from `.env` (`admin` / `nilo-dev-key` until you change them). That password is only for the console. The ingest API key is separate.
+
+The page edits the schedule, disk paths, MongoDB, MinIO, the backend API, SSH sources, the ingest key, the edge agent, and the console account. A secret field that is left blank keeps the value already stored. **Save** writes `/data/config/settings.yaml` and applies the schedule immediately. Changing the ingest bind host or port is stored at once and takes effect after **Restart service** (the container exits and Docker starts it again).
+
+## Traces
+
+Every sync, HTTP request (except `/v1/health`, `/`, `/console`, and `/console/static`), and edge shipment gets a trace id. The id is in each log line (`trace=...`) and, for uploads, in the `X-Trace-Id` response header. A step that fails appends one JSON object to `failures.jsonl` with the component, the operation, the file, the line, the exception, and the stack.
+
+```text
+{catalog_dir}/traces/datalake.jsonl    every log line
+{catalog_dir}/traces/failures.jsonl    errors only
+```
+
+Inside Docker those files are `/data/traces/`. The same trace id appears on the successful steps of that run, so one failure can be followed through the rest of the attempt.
+
+```bash
+nilo-datalake --config /etc/nilo-datalake/settings.yaml traces
+nilo-datalake --config /etc/nilo-datalake/settings.yaml sync
+```
+
+`sync` prints the trace id in its summary. `traces` prints the recent failures and their stacks.
+
 Run `serve` **or** the systemd sync timer, not both. `serve` already runs the daily pull and the inbox scan. A second timer would start a second pull of the same data. SQLite will wait, but the journal must be written by one process at a time.
 
 ## Configuration
 
-YAML is the base. A `.env` file and the process environment override it. Nested keys use two underscores: `NILO_PULL__MONGO__URI` overrides `pull.mongo.uri`. `NILO_CONFIG` selects the YAML file when `--config` is not passed.
+`nilo-datalake serve` reads `NILO_CONFIG` (or `--config`) and ignores the environment once that file exists, so a console edit survives a restart. The environment is applied only while the file is being created. In Docker that happens on the first start: `NILO_BOOTSTRAP_CONFIG` is the image file, and the process environment (from `.env`) is copied into `NILO_CONFIG`. Nested keys use two underscores: `NILO_PULL__MONGO__URI` overrides `pull.mongo.uri` during that copy. `load_settings` still applies the environment over a YAML file; the console path does not.
 
 | Section | Role |
 | --- | --- |
@@ -137,6 +193,7 @@ YAML is the base. A `.env` file and the process environment override it. Nested 
 | `pull` | Daily copy from MongoDB, MinIO, the backend API, and SSH |
 | `inbox` | Scan for finished `rsync`/`scp` drops |
 | `edge` | Read by the MiniPC agent only |
+| `console` | Username and password for the web console |
 
 `pull.safety_delay_seconds` (default 120) leaves out MongoDB documents and MinIO objects that changed moments ago. The next run picks them up after the writer has finished.
 
@@ -299,6 +356,7 @@ nilo-datalake --config /etc/nilo-datalake/settings.yaml status
 nilo-datalake --config /etc/nilo-datalake/settings.yaml gc
 nilo-datalake --config /etc/nilo-datalake/settings.yaml rebuild-catalog
 nilo-datalake --config /etc/nilo-datalake/settings.yaml check-config
+nilo-datalake --config /etc/nilo-datalake/settings.yaml traces
 nilo-datalake --config /etc/nilo-datalake/edge.yaml edge once
 ```
 

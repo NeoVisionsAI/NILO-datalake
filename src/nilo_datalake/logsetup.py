@@ -1,12 +1,5 @@
-"""Process-wide logging. Messages carry identifiers and byte counts, not payloads."""
+"""Backward-compatible import. New code uses ``nilo_datalake.tracing``."""
 
-from __future__ import annotations
+from nilo_datalake.tracing import configure_logging
 
-import logging
-
-
-def configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+__all__ = ["configure_logging"]

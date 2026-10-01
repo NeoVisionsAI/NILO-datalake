@@ -26,6 +26,7 @@ from nilo_datalake.errors import ConfigError
 from nilo_datalake.kinds import infer_kind
 from nilo_datalake.models import BatchManifest, ManifestObject, isoformat, utcnow
 from nilo_datalake.paths import sanitize_session_id
+from nilo_datalake.tracing import begin_trace, end_trace, span
 
 log = logging.getLogger(__name__)
 
@@ -40,18 +41,21 @@ def run_once(settings: Settings, client: DatalakeClient | None = None) -> dict:
     for session_dir in sorted(path for path in ready_root.iterdir() if path.is_dir()):
         if not (session_dir / "COMPLETE").is_file():
             continue
+        trace_id, token = begin_trace()
         try:
-            sanitize_session_id(session_dir.name)
-            _ship(settings, session_dir, client)
-            destination = sent_root / session_dir.name
-            if destination.exists():
-                shutil.rmtree(destination)
-            shutil.move(str(session_dir), str(destination))
+            with span("edge", "ship", session_id=session_dir.name):
+                sanitize_session_id(session_dir.name)
+                _ship(settings, session_dir, client)
+                destination = sent_root / session_dir.name
+                if destination.exists():
+                    shutil.rmtree(destination)
+                shutil.move(str(session_dir), str(destination))
             shipped.append(session_dir.name)
-            log.info("shipped session %s", session_dir.name)
+            log.info("shipped session %s trace=%s", session_dir.name, trace_id)
         except Exception as exc:
-            log.exception("failed to ship session %s", session_dir.name)
-            errors.append({"session_id": session_dir.name, "error": str(exc)})
+            errors.append({"session_id": session_dir.name, "error": str(exc), "trace_id": trace_id})
+        finally:
+            end_trace(token)
     return {"shipped": shipped, "errors": errors}
 
 

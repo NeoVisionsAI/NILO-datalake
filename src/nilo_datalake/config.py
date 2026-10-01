@@ -1,12 +1,19 @@
 """Configuration loaded from a YAML file, a ``.env`` file, and the environment.
 
-Environment variables override the YAML file. Nested fields use a double
-underscore: ``NILO_INGEST__API_KEY`` overrides ``ingest.api_key``.
+``load_settings`` lets environment variables override the YAML file. Nested
+fields use a double underscore: ``NILO_INGEST__API_KEY`` overrides
+``ingest.api_key``.
+
+The process started by Docker uses ``open_runtime_settings``. The first start
+copies the bootstrap file and the environment into ``NILO_CONFIG``. After that
+file exists, the web console is the source of truth and the environment is
+not applied again.
 """
 
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal
 
@@ -14,6 +21,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
 _GIB = 1024**3
+_runtime_config_path: ContextVar[Path | None] = ContextVar("nilo_runtime_config_path", default=None)
 
 
 class VolumeConfig(BaseModel):
@@ -118,6 +126,20 @@ class InboxConfig(BaseModel):
     abandon_after_hours: int = 72
 
 
+class TraceConfig(BaseModel):
+    """Where failure traces are written. Empty uses ``{catalog_dir}/traces``."""
+
+    directory: Path | None = None
+
+
+class ConsoleConfig(BaseModel):
+    """Login for the web console. The password is stored in the runtime settings file."""
+
+    enabled: bool = True
+    username: str = "admin"
+    password: str = ""
+
+
 class EdgeConfig(BaseModel):
     spool_dir: Path = Path("/var/nilo/spool")
     transport: Literal["http", "rsync"] = "http"
@@ -137,6 +159,8 @@ class Settings(BaseSettings):
     pull: PullConfig = Field(default_factory=PullConfig)
     inbox: InboxConfig = Field(default_factory=InboxConfig)
     edge: EdgeConfig = Field(default_factory=EdgeConfig)
+    trace: TraceConfig = Field(default_factory=TraceConfig)
+    console: ConsoleConfig = Field(default_factory=ConsoleConfig)
     log_level: str = "INFO"
 
     model_config = SettingsConfigDict(
@@ -186,6 +210,66 @@ def load_settings(config_path: Path | None = None) -> Settings:
     return Loaded()
 
 
+def load_file_only(path: Path) -> Settings:
+    """Load a settings file and ignore environment variables.
+
+    The web console writes this file. Environment values are applied only
+    once, when the file is created, so later edits are not overwritten on restart.
+    """
+
+    class Loaded(Settings):
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            return (init_settings, YamlConfigSettingsSource(settings_cls, yaml_file=path))
+
+    if not path.is_file():
+        raise FileNotFoundError(f"config file not found: {path}")
+    return Loaded()
+
+
+def save_settings(path: Path, settings: Settings) -> None:
+    """Write settings atomically. The file is readable only by its owner."""
+
+    import yaml
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = settings.model_dump(mode="json")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def current_config_path() -> Path | None:
+    return _runtime_config_path.get()
+
+
+def open_runtime_settings(explicit: Path | None = None) -> Settings:
+    """Open the console-managed file, creating it from the bootstrap file on first use."""
+
+    runtime = explicit if explicit is not None else resolve_config_path(None)
+    if runtime is not None and runtime.is_file():
+        _runtime_config_path.set(runtime)
+        return load_file_only(runtime)
+    bootstrap_env = os.environ.get("NILO_BOOTSTRAP_CONFIG")
+    bootstrap = Path(bootstrap_env) if bootstrap_env else None
+    if runtime is not None and bootstrap is not None and bootstrap.is_file():
+        seeded = load_settings(bootstrap)
+        save_settings(runtime, seeded)
+        _runtime_config_path.set(runtime)
+        return load_file_only(runtime)
+    settings = load_settings(explicit)
+    _runtime_config_path.set(runtime if runtime is not None and runtime.is_file() else None)
+    return settings
+
+
 def redact(settings: Settings) -> dict:
     """Return a JSON-ready view of the settings with secrets removed."""
 
@@ -196,6 +280,7 @@ def redact(settings: Settings) -> dict:
     data["pull"]["minio"]["secret_key"] = _mask(data["pull"]["minio"]["secret_key"])
     data["pull"]["http"]["api_key"] = _mask(data["pull"]["http"]["api_key"])
     data["edge"]["api_key"] = _mask(data["edge"]["api_key"])
+    data["console"]["password"] = _mask(data["console"]["password"])
     return data
 
 

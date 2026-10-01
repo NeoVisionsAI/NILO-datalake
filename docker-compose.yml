@@ -1,0 +1,111 @@
+name: nilo-datalake
+
+services:
+  datalake:
+    build: .
+    image: nilo-datalake:local
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      # These values are copied into /data/config/settings.yaml on the first
+      # start. After that file exists, the web console is the source of truth.
+      # Delete the datalake volume to seed again from this environment.
+      NILO_CONFIG: /data/config/settings.yaml
+      NILO_BOOTSTRAP_CONFIG: /etc/nilo-datalake/settings.yaml
+      NILO_CONSOLE__USERNAME: ${NILO_CONSOLE_USERNAME:-admin}
+      NILO_CONSOLE__PASSWORD: ${NILO_CONSOLE_PASSWORD:-nilo-dev-key}
+      NILO_INGEST__API_KEY: ${NILO_INGEST_API_KEY:-nilo-dev-key}
+      NILO_PULL__MONGO__URI: mongodb://${MONGO_USER:-nilo}:${MONGO_PASSWORD:-nilo-secret}@mongo:27017/?authSource=admin
+      NILO_PULL__MINIO__ENDPOINT: minio:9000
+      NILO_PULL__MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:-nilo}
+      NILO_PULL__MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-nilo-secret}
+    volumes:
+      - datalake:/data
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/v1/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-nilo}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-nilo-secret}
+    volumes:
+      - mongo:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--username",
+          "${MONGO_USER:-nilo}",
+          "--password",
+          "${MONGO_PASSWORD:-nilo-secret}",
+          "--authenticationDatabase",
+          "admin",
+          "--eval",
+          "db.adminCommand('ping')",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nilo}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-nilo-secret}
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-nilo}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-nilo-secret}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/nilo-media
+        echo bucket-ready
+    restart: "no"
+
+volumes:
+  datalake:
+  mongo:
+  minio:

@@ -1,0 +1,65 @@
+# Settings baked into the datalake image.
+# Passwords are overridden by the environment from docker compose / .env.
+
+site_id: hospital-local
+
+storage:
+  volumes:
+    - id: disk1
+      root: /data
+      enabled: true
+  # Small reserve so a fresh Docker volume can accept uploads.
+  reserve_bytes: 67108864
+  min_free_bytes: 1048576
+  catalog_path: /data/catalog/catalog.sqlite
+
+ingest:
+  enabled: true
+  host: 0.0.0.0
+  port: 8088
+  api_key: nilo-dev-key
+  allow_insecure_no_auth: false
+
+pull:
+  enabled: true
+  schedule: "0 2 * * *"
+  timezone: UTC
+  safety_delay_seconds: 120
+  mongo:
+    enabled: true
+    uri: mongodb://nilo:nilo-secret@mongo:27017/?authSource=admin
+    database: nilo
+    collections:
+      - name: sessions
+        timestamp_field: updated_at
+        chunk_size: 2000
+  minio:
+    enabled: true
+    endpoint: minio:9000
+    access_key: nilo
+    secret_key: nilo-secret
+    secure: false
+    session_prefix: sessions/
+    buckets:
+      - name: nilo-media
+        prefix: ""
+  http:
+    enabled: false
+  ssh:
+    enabled: false
+
+inbox:
+  enabled: true
+  poll_seconds: 60
+  abandon_after_hours: 72
+
+trace:
+  directory: /data/traces
+
+# Login for http://127.0.0.1:8088/console. Compose overrides this on first boot.
+console:
+  enabled: true
+  username: admin
+  password: nilo-dev-key
+
+log_level: INFO

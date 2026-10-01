@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import shutil
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from nilo_datalake import __version__
 from nilo_datalake.config import Settings
@@ -30,13 +33,17 @@ from nilo_datalake.errors import (
 from nilo_datalake.kinds import normalize_kind
 from nilo_datalake.models import isoformat
 from nilo_datalake.paths import is_sha256, sanitize_logical_path, sanitize_session_id, sanitize_site_id
+from nilo_datalake.console.routes import install_console
 from nilo_datalake.service import Context
 from nilo_datalake.sync import start_scheduler
+from nilo_datalake.tracing import begin_trace, bound, end_trace
+
+log = logging.getLogger(__name__)
 
 _MAX_PATH_HEADER = 512
 
 
-def create_app(ctx: Context) -> FastAPI:
+def create_app(ctx: Context, config_path: Path | None = None) -> FastAPI:
     if ctx.settings.ingest.enabled:
         ensure_ingest_auth(ctx.settings)
 
@@ -51,13 +58,47 @@ def create_app(ctx: Context) -> FastAPI:
     app = FastAPI(title="NILO datalake", version=__version__, lifespan=lifespan)
     app.state.ctx = ctx
 
+    @app.middleware("http")
+    async def trace_request(request: Request, call_next):
+        if request.url.path in {"/v1/health", "/", "/console"} or request.url.path.startswith("/console/static"):
+            return await call_next(request)
+        incoming = request.headers.get("x-trace-id", "")
+        trace_id, token = begin_trace(incoming if _valid_trace_id(incoming) else None)
+        started = time.perf_counter()
+        operation = f"{request.method} {request.url.path}"
+        try:
+            with bound("api", operation):
+                log.info("start")
+                try:
+                    response = await call_next(request)
+                except Exception:
+                    log.exception("unhandled")
+                    response = JSONResponse(
+                        status_code=500,
+                        content={"detail": "internal error", "trace_id": trace_id},
+                    )
+                elapsed = int((time.perf_counter() - started) * 1000)
+                if response.status_code >= 500:
+                    log.error("status=%s duration_ms=%s", response.status_code, elapsed)
+                else:
+                    log.info("status=%s duration_ms=%s", response.status_code, elapsed)
+            response.headers["X-Trace-Id"] = trace_id
+            return response
+        finally:
+            end_trace(token)
+
     @app.get("/v1/health")
     def health() -> dict:
         return {"status": "ok"}
 
     if ctx.settings.ingest.enabled:
         _install_routes(app)
+    install_console(app, config_path)
     return app
+
+
+def _valid_trace_id(value: str) -> bool:
+    return 8 <= len(value) <= 64 and value.replace("-", "").isalnum()
 
 
 def ensure_ingest_auth(settings: Settings) -> None:

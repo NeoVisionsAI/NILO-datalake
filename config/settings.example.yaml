@@ -100,4 +100,17 @@ edge:
   source_name: edge
   timeout_seconds: 3600
 
+# Empty directory means {catalog directory}/traces.
+# failures.jsonl is the file to open when a run breaks.
+trace:
+  directory:
+
+# Web console at http://<host>:8088/console.
+# After this file exists, `nilo-datalake serve` reads it as written and does
+# not let environment variables overwrite console edits.
+console:
+  enabled: true
+  username: admin
+  password: change-me
+
 log_level: INFO
