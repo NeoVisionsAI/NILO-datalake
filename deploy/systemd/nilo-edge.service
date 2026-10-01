@@ -1,0 +1,11 @@
+[Unit]
+Description=Ship completed NILO sessions from the MiniPC
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=nilo
+Group=nilo
+WorkingDirectory=/opt/nilo-datalake
+EnvironmentFile=-/etc/nilo-datalake/edge.env
+ExecStart=/opt/nilo-datalake/.venv/bin/nilo-datalake --config /etc/nilo-datalake/edge.yaml edge once

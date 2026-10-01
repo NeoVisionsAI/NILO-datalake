@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull NILO clinical data into the NAS archive
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=nilo
+Group=nilo
+WorkingDirectory=/opt/nilo-datalake
+EnvironmentFile=-/etc/nilo-datalake/datalake.env
+ExecStart=/opt/nilo-datalake/.venv/bin/nilo-datalake --config /etc/nilo-datalake/settings.yaml sync

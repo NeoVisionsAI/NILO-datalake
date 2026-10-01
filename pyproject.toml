@@ -1,0 +1,34 @@
+[project]
+name = "nilo-datalake"
+version = "0.1.0"
+description = "Archive service that stores NILO clinical capture data on a NAS."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pymongo>=4.10",
+    "minio>=7.2",
+    "httpx>=0.27",
+    "apscheduler>=3.10,<4",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+nilo-datalake = "nilo_datalake.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

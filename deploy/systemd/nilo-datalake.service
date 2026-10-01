@@ -1,0 +1,17 @@
+[Unit]
+Description=NILO datalake ingest API and scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nilo
+Group=nilo
+WorkingDirectory=/opt/nilo-datalake
+EnvironmentFile=-/etc/nilo-datalake/datalake.env
+ExecStart=/opt/nilo-datalake/.venv/bin/nilo-datalake --config /etc/nilo-datalake/settings.yaml serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

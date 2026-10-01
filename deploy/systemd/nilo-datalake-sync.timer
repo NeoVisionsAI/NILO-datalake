@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily NILO datalake pull
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+Unit=nilo-datalake-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly NILO edge upload
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=nilo-edge.service
+
+[Install]
+WantedBy=timers.target

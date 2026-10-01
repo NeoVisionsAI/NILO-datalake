@@ -1,0 +1,103 @@
+# Copy this file to /etc/nilo-datalake/settings.yaml and edit it.
+# Secrets can live here or, preferably, in the environment. See .env.example.
+# Environment variables override this file. NILO_INGEST__API_KEY overrides ingest.api_key.
+
+site_id: hospital-a
+
+storage:
+  # Fill disk1 first. When it cannot fit the next file, new files go to disk2.
+  # Files already written stay on the disk that received them.
+  volumes:
+    - id: disk1
+      root: /srv/nilo-datalake/disk1
+      enabled: true
+    - id: disk2
+      root: /srv/nilo-datalake/disk2
+      enabled: false
+  # Keep this much free on each disk. 50 GiB.
+  reserve_bytes: 53687091200
+  # Refuse to open an upload batch on a disk with less than this much free. 1 GiB.
+  min_free_bytes: 1073741824
+  catalog_path: /srv/nilo-datalake/disk1/catalog/catalog.sqlite
+
+ingest:
+  enabled: true
+  host: 0.0.0.0
+  port: 8088
+  api_key: change-me
+  # Development only. Never enable this on a hospital network.
+  allow_insecure_no_auth: false
+
+pull:
+  # When serve is running, this cron pulls Mongo, MinIO, the backend HTTP API,
+  # and SSH sources, then promotes drop folders. Use UTC.
+  # Leave this false if a systemd timer calls `nilo-datalake sync` instead.
+  enabled: true
+  schedule: "0 2 * * *"
+  timezone: UTC
+  # Ignore backend rows and objects newer than this. They may still be writing.
+  safety_delay_seconds: 120
+
+  mongo:
+    enabled: false
+    uri: mongodb://nilo:change-me@backend.internal:27017
+    database: nilo
+    collections:
+      - name: sessions
+        timestamp_field: updated_at
+        timestamp_is_string: false
+        chunk_size: 2000
+      - name: physiological_samples
+        timestamp_field: updated_at
+        chunk_size: 2000
+
+  minio:
+    enabled: false
+    endpoint: backend.internal:9000
+    access_key: change-me
+    secret_key: change-me
+    secure: false
+    # Keys under sessions/{session_id}/ are filed on that session.
+    session_prefix: sessions/
+    buckets:
+      - name: nilo-media
+        prefix: ""
+
+  http:
+    enabled: false
+    base_url: https://backend.internal/archive/v1
+    api_key: change-me
+    page_limit: 100
+    timeout_seconds: 600
+
+  # The datalake connects out and downloads. rsync runs over SSH.
+  # The remote directory is a spool: ready/{session_id}/COMPLETE
+  ssh:
+    enabled: false
+    binary: rsync
+    ssh_command: ssh -i /etc/nilo-datalake/id_ed25519 -o StrictHostKeyChecking=yes
+    sources:
+      - name: ward-minipc
+        remote: nilo@10.1.0.20:/var/nilo/spool/ready
+        delete_after: false
+
+inbox:
+  # Promote rsync/scp drops while serve is running.
+  enabled: true
+  poll_seconds: 60
+  abandon_after_hours: 72
+
+# Used only by `nilo-datalake edge`. This block is for the MiniPC, not the NAS.
+edge:
+  spool_dir: /var/nilo/spool
+  transport: http   # http | rsync
+  interval_seconds: 3600
+  datalake_url: http://10.1.0.5:8088
+  api_key: change-me
+  # Used when transport is rsync. Point it at one volume's inbox directory.
+  rsync_target: nilo@10.1.0.5:/srv/nilo-datalake/disk1/inbox
+  rsync_binary: rsync
+  source_name: edge
+  timeout_seconds: 3600
+
+log_level: INFO
