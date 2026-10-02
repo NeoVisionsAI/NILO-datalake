@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -48,8 +48,14 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
     router = APIRouter(prefix="/console")
 
     @router.get("")
-    def page() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+    def page() -> HTMLResponse:
+        build = os.environ.get("NILO_BUILD_SHA", "dev")[:12]
+        html = (static_dir / "index.html").read_text(encoding="utf-8").replace("{{BUILD}}", build)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+    @router.get("/api/version")
+    def console_version() -> dict:
+        return {"build": os.environ.get("NILO_BUILD_SHA", "unknown")}
 
     @router.post("/api/login")
     def login(body: LoginBody, request: Request):

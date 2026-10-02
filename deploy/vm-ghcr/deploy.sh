@@ -184,7 +184,8 @@ if ! pull_datalake_image; then
   echo "The datalake image was not pulled. The console was not started." >&2
   exit 1
 fi
-compose up -d --remove-orphans datalake
+compose up -d --pull always --force-recreate --remove-orphans datalake 2>/dev/null \
+  || compose up -d --force-recreate --remove-orphans datalake
 
 echo "Waiting for the console and the archive API on port ${port}..."
 ok=0
@@ -203,6 +204,15 @@ if [[ "$ok" != 1 ]]; then
   compose ps >&2 || true
   compose logs --tail 80 datalake >&2 || true
   exit 1
+fi
+
+console_build="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/console/api/version" 2>/dev/null | sed -n 's/.*"build"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)"
+if curl -fsS --max-time 5 "http://127.0.0.1:${port}/console/static/app.js" 2>/dev/null | grep -q '"overview"'; then
+  echo "Console UI: current (Overview dashboard)."
+elif [[ -n "$console_build" && "$console_build" != "unknown" ]]; then
+  echo "Console build ${console_build} — if the page looks old, hard-refresh the browser (Ctrl+Shift+R)." >&2
+else
+  echo "Console static files look outdated. Run ./deploy.sh again or hard-refresh (Ctrl+Shift+R)." >&2
 fi
 
 echo

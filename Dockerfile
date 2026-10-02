@@ -1,5 +1,8 @@
 FROM python:3.13-slim-bookworm
 
+ARG GIT_SHA=unknown
+ENV NILO_BUILD_SHA=$GIT_SHA
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \

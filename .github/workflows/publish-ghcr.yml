@@ -54,6 +54,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
 
       # Org-owned GHCR packages often cannot be switched to public via API (403/404).
       # One-time UI: org Packages → nilo-datalake → Change visibility → Public.
