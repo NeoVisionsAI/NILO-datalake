@@ -95,27 +95,36 @@ explain_console_down() {
   docker compose --env-file credentials.env logs --tail 40 datalake >&2 || true
 }
 
+console_page_up() {
+  local base="$1"
+  local page_file="$2"
+  local code
+  code="$(curl -s -L --max-time 5 -o "$page_file" -w '%{http_code}' "${base}/console" 2>/dev/null || true)"
+  [[ "$code" == 200 ]] && grep -q "NILO archive console" "$page_file"
+}
+
 check_web() {
   local port="${CFG[HOST_PORT]:-8088}"
   local base="http://127.0.0.1:${port}"
   local user="${CFG[NILO_CONSOLE_USERNAME]:-}"
   local pass="${CFG[NILO_CONSOLE_PASSWORD]:-}"
-  local page_file login_file settings_file jar code attempt
+  local page_file login_file settings_file jar code
   page_file="$(mktemp)"
   login_file="$(mktemp)"
   settings_file="$(mktemp)"
   jar="$(mktemp)"
   echo "Checking ${base}/console ..."
-  code=""
-  for attempt in $(seq 1 10); do
-    code="$(curl -sS -L --max-time 5 -o "$page_file" -w '%{http_code}' "${base}/console" || true)"
-    if [[ "$code" == 200 ]] && grep -q "NILO archive console" "$page_file"; then
-      break
+  if ! console_page_up "$base" "$page_file"; then
+    echo "The console is not running. Starting the archive and the web page..."
+    if ! ./deploy.sh; then
+      echo "The console did not start." >&2
+      explain_console_down "$port"
+      rm -f "$page_file" "$login_file" "$settings_file" "$jar"
+      return 1
     fi
-    sleep 2
-  done
-  if [[ "$code" != 200 ]] || ! grep -q "NILO archive console" "$page_file"; then
-    echo "The console page is not up (HTTP ${code:-000})." >&2
+  fi
+  if ! console_page_up "$base" "$page_file"; then
+    echo "The console page is still not up." >&2
     explain_console_down "$port"
     rm -f "$page_file" "$login_file" "$settings_file" "$jar"
     return 1
@@ -126,7 +135,7 @@ check_web() {
     rm -f "$page_file" "$login_file" "$settings_file" "$jar"
     return 1
   fi
-  code="$(curl -sS --max-time 5 -o "$login_file" -w '%{http_code}' -c "$jar" \
+  code="$(curl -s --max-time 5 -o "$login_file" -w '%{http_code}' -c "$jar" \
     -H 'content-type: application/json' \
     -d "{\"username\":\"${user}\",\"password\":\"${pass}\"}" \
     "${base}/console/api/login" || true)"
@@ -136,7 +145,7 @@ check_web() {
     rm -f "$page_file" "$login_file" "$settings_file" "$jar"
     return 1
   fi
-  code="$(curl -sS --max-time 5 -o "$settings_file" -w '%{http_code}' -b "$jar" \
+  code="$(curl -s --max-time 5 -o "$settings_file" -w '%{http_code}' -b "$jar" \
     "${base}/console/api/settings" || true)"
   rm -f "$page_file" "$login_file" "$settings_file" "$jar"
   if [[ "$code" != 200 ]]; then
@@ -166,7 +175,7 @@ NILO datalake — credentials
   7) Image                     ${CFG[SERVICE_IMAGE]:-}
   s) Save
   m) Install MinIO if it is not already running
-  w) Check the web console (page up + login)
+  w) Start the console if needed, then test the page and login
   q) Quit
 EOF
   read -r -p "> " choice
