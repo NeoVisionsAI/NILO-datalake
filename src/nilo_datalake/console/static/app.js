@@ -1,9 +1,9 @@
 const app = document.querySelector("#app");
 const sections = [
+  ["overview", "Overview"],
   ["general", "General"],
   ["schedule", "Schedule"],
   ["storage", "Storage"],
-  ["mongo", "MongoDB"],
   ["minio", "MinIO"],
   ["http", "Backend API"],
   ["ssh", "SSH"],
@@ -13,8 +13,10 @@ const sections = [
 ];
 
 let state = null;
-let section = "general";
+let dashboard = null;
+let section = "overview";
 let message = null;
+let connectionTests = { minio: null, http: null };
 
 boot();
 
@@ -29,16 +31,35 @@ async function boot() {
     return;
   }
   state = await response.json();
+  await refreshDashboard();
   renderApp();
+}
+
+async function refreshDashboard() {
+  const response = await fetch("/console/api/dashboard");
+  if (response.status === 401) {
+    renderLogin();
+    return false;
+  }
+  if (response.ok) {
+    dashboard = await response.json();
+  }
+  return true;
 }
 
 function renderLogin(error) {
   app.innerHTML = "";
   const wrap = el("div", { className: "login-wrap" });
   const card = el("form", { className: "card login" });
+  const logo = el("img", {
+    className: "login-logo",
+    src: "/console/static/logo.svg",
+    alt: "NILO",
+  });
   card.append(
+    logo,
     el("h1", { textContent: "NILO archive" }),
-    el("p", { className: "lede", textContent: "Sign in to change how this archive runs." }),
+    el("p", { className: "lede", textContent: "Sign in to manage backups and storage." }),
   );
   const user = input("text", "admin");
   const password = input("password", "");
@@ -59,6 +80,7 @@ function renderLogin(error) {
       renderLogin(await errorText(response));
       return;
     }
+    section = "overview";
     boot();
   });
   wrap.append(card);
@@ -69,8 +91,12 @@ function renderApp() {
   app.innerHTML = "";
   const shell = el("div", { className: "shell" });
   const nav = el("nav", { className: "nav" });
-  nav.append(el("h1", { textContent: "NILO" }));
-  nav.append(el("p", { className: "hint", textContent: state.settings.site_id }));
+  const brand = el("div", { className: "nav-brand" });
+  brand.append(
+    el("img", { src: "/console/static/logo.svg", alt: "" }),
+    el("span", { textContent: "NILO" }),
+  );
+  nav.append(brand, el("p", { className: "hint", textContent: state.settings.site_id }));
   for (const [id, label] of sections) {
     const button = el("button", { type: "button", textContent: label });
     if (id === section) button.className = "active";
@@ -82,14 +108,24 @@ function renderApp() {
   }
   const main = el("main", { className: "main" });
   const top = el("div", { className: "top" });
+  const title = sections.find((item) => item[0] === section)[1];
   top.append(
     el("div", {}, [
-      el("h1", { textContent: sections.find((item) => item[0] === section)[1] }),
-      el("p", { className: "lede", textContent: "Saved values replace the settings file. A blank secret keeps the one already stored." }),
+      el("h1", { textContent: title }),
+      el("p", {
+        className: "lede",
+        textContent: section === "overview"
+          ? "Status of local storage and the latest archived copies from MinIO."
+          : "Saved values replace the settings file. A blank secret keeps the one already stored.",
+      }),
     ]),
   );
   const actions = el("div", { className: "row" });
-  actions.append(button("Save", "primary", save), button("Restart service", "ghost", restart), button("Sign out", "ghost", logout));
+  actions.append(
+    button("Save", "primary", save),
+    button("Restart service", "ghost", restart),
+    button("Sign out", "ghost", logout),
+  );
   top.append(actions);
   main.append(top);
   if (message) main.append(el("p", { className: message.kind, textContent: message.text }));
@@ -103,6 +139,10 @@ function renderApp() {
 function renderSection() {
   const settings = state.settings;
   const root = el("div");
+  if (section === "overview") {
+    root.append(renderOverview());
+    return root;
+  }
   if (section === "general") {
     root.append(
       field("Site id", text(settings.site_id, (value) => { settings.site_id = value; })),
@@ -113,7 +153,7 @@ function renderSection() {
   if (section === "schedule") {
     const cron = text(settings.pull.schedule, (value) => { settings.pull.schedule = value; });
     root.append(
-      check("Pull from the backend on a schedule", settings.pull.enabled, (value) => { settings.pull.enabled = value; }),
+      check("Pull from MinIO and other backends on a schedule", settings.pull.enabled, (value) => { settings.pull.enabled = value; }),
       field("Cron (minute hour day month weekday)", cron),
       el("div", { className: "row" }, [
         button("Daily at 02:00", "ghost", () => { settings.pull.schedule = "0 2 * * *"; renderApp(); }),
@@ -153,48 +193,18 @@ function renderSection() {
       field("Catalog path", text(settings.storage.catalog_path, (value) => { settings.storage.catalog_path = value; })),
     );
   }
-  if (section === "mongo") {
-    const login = state.mongo_login;
-    root.append(
-      check("Pull MongoDB", settings.pull.mongo.enabled, (value) => { settings.pull.mongo.enabled = value; }),
-      field("Host", text(login.host, (value) => { login.host = value; })),
-      field("Username", text(login.username, (value) => { login.username = value; })),
-      secretField("Password", login.password, login.password_set, (value) => { login.password = value; }),
-      field("Auth database", text(login.auth_source, (value) => { login.auth_source = value; })),
-      field("Database", text(settings.pull.mongo.database, (value) => { settings.pull.mongo.database = value; })),
-      button("Test connection", "ghost", () => testKind("mongo")),
-    );
-    root.append(el("h2", { textContent: "Collections" }));
-    for (const collection of settings.pull.mongo.collections) {
-      const row = el("div", { className: "list-row collection" });
-      row.append(
-        labeled("Name", text(collection.name, (value) => { collection.name = value; })),
-        labeled("Timestamp field", text(collection.timestamp_field, (value) => { collection.timestamp_field = value; })),
-        labeled("Text timestamp", checkbox(collection.timestamp_is_string, (value) => { collection.timestamp_is_string = value; })),
-        labeled("Chunk", number(collection.chunk_size, (value) => { collection.chunk_size = value; })),
-        button("Remove", "danger", () => {
-          settings.pull.mongo.collections = settings.pull.mongo.collections.filter((item) => item !== collection);
-          renderApp();
-        }),
-      );
-      root.append(row);
-    }
-    root.append(button("Add collection", "ghost", () => {
-      settings.pull.mongo.collections.push({ name: "", timestamp_field: "updated_at", timestamp_is_string: false, chunk_size: 2000 });
-      renderApp();
-    }));
-  }
   if (section === "minio") {
     const minio = settings.pull.minio;
     root.append(
-      check("Pull MinIO", minio.enabled, (value) => { minio.enabled = value; }),
+      el("p", { className: "lede", textContent: "Session videos and MongoDB dump files are copied from MinIO buckets into local archive disks. This service does not connect to MongoDB directly." }),
+      check("Pull from MinIO", minio.enabled, (value) => { minio.enabled = value; }),
       field("Endpoint (host:port)", text(minio.endpoint, (value) => { minio.endpoint = value; })),
       field("Access key", text(minio.access_key, (value) => { minio.access_key = value; })),
       secretField("Secret key", minio.secret_key, state.secrets_set.includes("pull.minio.secret_key"), (value) => { minio.secret_key = value; }),
       check("TLS", minio.secure, (value) => { minio.secure = value; }),
       field("Session prefix", text(minio.session_prefix, (value) => { minio.session_prefix = value; })),
-      button("Test connection", "ghost", () => testKind("minio")),
     );
+    root.append(renderConnectionTest("minio", "Test MinIO connection", "Checks endpoint, credentials, and lists buckets."));
     for (const bucket of minio.buckets) {
       const row = el("div", { className: "list-row bucket" });
       row.append(
@@ -220,7 +230,7 @@ function renderSection() {
       secretField("API key", http.api_key, state.secrets_set.includes("pull.http.api_key"), (value) => { http.api_key = value; }),
       field("Page size", number(http.page_limit, (value) => { http.page_limit = value; })),
       field("Timeout (seconds)", number(http.timeout_seconds, (value) => { http.timeout_seconds = value; })),
-      button("Test connection", "ghost", () => testKind("http")),
+      renderConnectionTest("http", "Test backend API", "Calls the changes endpoint with the API key above."),
     );
   }
   if (section === "ssh") {
@@ -281,6 +291,103 @@ function renderSection() {
   return root;
 }
 
+function renderOverview() {
+  const wrap = el("div");
+  if (!dashboard) {
+    wrap.append(el("p", { className: "hint", textContent: "Loading dashboard…" }));
+    return wrap;
+  }
+  const grid = el("div", { className: "stats-grid" });
+  const disk = dashboard.disks[0];
+  if (disk && !disk.error) {
+    const usedPct = disk.total_bytes ? Math.min(100, Math.round((disk.used_bytes / disk.total_bytes) * 100)) : 0;
+    const card = el("div", { className: "stat-card" });
+    card.append(
+      el("h2", { textContent: "Archive disk" }),
+      el("p", { className: "stat-value", textContent: `${usedPct}% used` }),
+      el("p", {
+        className: "stat-detail",
+        textContent: `${formatBytes(disk.used_bytes)} of ${formatBytes(disk.total_bytes)} · ${disk.free_bytes !== undefined ? formatBytes(disk.free_bytes) + " free" : ""} (${disk.id})`,
+      }),
+    );
+    const bar = el("div", { className: "stat-bar" });
+    bar.append(el("div", { className: "stat-bar-fill", style: `width:${usedPct}%` }));
+    card.append(bar);
+    grid.append(card);
+  } else if (disk && disk.error) {
+    grid.append(statCard("Archive disk", "Unavailable", disk.error));
+  }
+  grid.append(
+    statCard(
+      "Indexed archive",
+      formatBytes(dashboard.archive_bytes),
+      `${dashboard.archive_objects} object(s) in the catalog`,
+    ),
+  );
+  grid.append(statCard("Session backup", backupTitle(dashboard.last_session_backup), backupDetail(dashboard.last_session_backup)));
+  grid.append(statCard("Database backup", backupTitle(dashboard.last_database_backup), backupDetail(dashboard.last_database_backup)));
+  wrap.append(grid);
+
+  const syncLine = el("p", { className: "hint" });
+  if (dashboard.sync_running) {
+    syncLine.textContent = "A sync is running now.";
+  } else if (dashboard.last_sync && dashboard.last_sync.finished_at) {
+    syncLine.textContent = `Last sync finished at ${formatWhen(dashboard.last_sync.finished_at)}${dashboard.last_sync.errors?.length ? " (with errors)" : ""}.`;
+  } else {
+    syncLine.textContent = "No sync has completed yet in this process. Use Schedule → Run sync now.";
+  }
+  wrap.append(syncLine);
+  wrap.append(button("Refresh summary", "ghost", async () => {
+    await refreshDashboard();
+    renderApp();
+  }));
+  return wrap;
+}
+
+function statCard(title, value, detail) {
+  const card = el("div", { className: "stat-card" });
+  card.append(
+    el("h2", { textContent: title }),
+    el("p", { className: "stat-value", textContent: value }),
+    el("p", { className: "stat-detail", textContent: detail }),
+  );
+  return card;
+}
+
+function backupTitle(row) {
+  if (!row || !row.at) return "None yet";
+  return formatWhen(row.at);
+}
+
+function backupDetail(row) {
+  if (!row || !row.at) return "Run a MinIO pull to archive sessions and dump files.";
+  const parts = [];
+  if (row.label) parts.push(row.label);
+  if (row.size_bytes) parts.push(formatBytes(row.size_bytes));
+  if (row.path && row.path !== row.label) parts.push(row.path);
+  return parts.join(" · ") || "Archived from MinIO";
+}
+
+function renderConnectionTest(kind, label, description) {
+  const card = el("div", { className: "connection-card" });
+  card.append(
+    el("h2", { textContent: "Connection test" }),
+    el("p", { className: "lede", textContent: description }),
+  );
+  const row = el("div", { className: "test-row" });
+  const testButton = el("button", { type: "button", className: "primary", textContent: label });
+  testButton.addEventListener("click", () => testKind(kind));
+  const result = el("div", { className: "test-result", textContent: "Not tested in this session." });
+  const saved = connectionTests[kind];
+  if (saved) {
+    result.textContent = saved.text;
+    result.className = "test-result " + (saved.ok ? "ok" : "error");
+  }
+  row.append(testButton, result);
+  card.append(row);
+  return card;
+}
+
 async function save() {
   const response = await fetch("/console/api/settings", {
     method: "PUT",
@@ -301,6 +408,7 @@ async function save() {
       ? "Saved. Restart the service to bind the new host or port."
       : "Saved. The schedule and credentials are already in use.",
   };
+  await refreshDashboard();
   renderApp();
 }
 
@@ -322,7 +430,7 @@ async function testKind(kind) {
   });
   if (response.status === 401) return renderLogin();
   const body = await response.json();
-  message = { kind: body.ok ? "ok" : "error", text: body.detail || body.error || "Test failed" };
+  connectionTests[kind] = { ok: body.ok, text: body.detail || body.error || "Test failed" };
   renderApp();
 }
 
@@ -350,11 +458,15 @@ async function restart() {
 async function logout() {
   await fetch("/console/api/logout", { method: "POST" });
   state = null;
+  dashboard = null;
+  connectionTests = { minio: null, http: null };
   renderLogin();
 }
 
 function payload() {
-  return { settings: state.settings, mongo_login: state.mongo_login };
+  const body = { settings: state.settings };
+  if (state.mongo_login) body.mongo_login = state.mongo_login;
+  return body;
 }
 
 function secretField(label, value, stored, setter) {
@@ -383,8 +495,7 @@ function text(value, setter) {
 }
 
 function number(value, setter) {
-  const node = input("number", value ?? 0, (raw) => setter(Number(raw)));
-  return node;
+  return input("number", value ?? 0, (raw) => setter(Number(raw)));
 }
 
 function input(type, value, setter) {
@@ -418,7 +529,10 @@ function button(label, className, onClick) {
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) node[key] = value;
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "style") node.style.cssText = value;
+    else node[key] = value;
+  }
   for (const child of children) node.append(child);
   return node;
 }
@@ -431,6 +545,29 @@ function fromGiB(text) {
   const value = Number(text);
   if (!Number.isFinite(value) || value < 0) return 0;
   return Math.round(value * 1073741824);
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "—";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let size = n;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? size.toFixed(unit === 0 ? 0 : 1) : size.toFixed(2)} ${units[unit]}`;
+}
+
+function formatWhen(iso) {
+  if (!iso) return "—";
+  try {
+    const date = new Date(iso);
+    return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch (_error) {
+    return iso;
+  }
 }
 
 async function errorText(response) {

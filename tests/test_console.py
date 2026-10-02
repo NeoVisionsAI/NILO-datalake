@@ -72,6 +72,13 @@ def test_login_and_settings_round_trip(ctx, tmp_path) -> None:
         unknown = client.post("/console/api/test/nope", json=_payload(body))
         assert unknown.status_code == 404
 
+        dash = client.get("/console/api/dashboard")
+        assert dash.status_code == 200
+        panel = dash.json()
+        assert "disks" in panel
+        assert "last_session_backup" in panel
+        assert "last_database_backup" in panel
+
 
 def test_file_only_ignores_environment(tmp_path, monkeypatch) -> None:
     path = tmp_path / "settings.yaml"

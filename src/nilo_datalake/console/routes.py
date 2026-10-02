@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from nilo_datalake.config import Settings, save_settings
 from nilo_datalake.console.store import apply_form, view_settings
+from nilo_datalake.console.summary import build_dashboard
 from nilo_datalake.errors import ConfigError
 from nilo_datalake.passwords import verify_password
 from nilo_datalake.service import build_context
@@ -88,6 +89,15 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
     def get_settings(request: Request) -> dict:
         settings = _require(request)
         return view_settings(settings)
+
+    @router.get("/api/dashboard")
+    def get_dashboard(request: Request) -> dict:
+        _require(request)
+        ctx = request.app.state.ctx
+        running = getattr(request.app.state, "sync_thread", None)
+        body = build_dashboard(ctx, last_sync=getattr(request.app.state, "last_sync", None))
+        body["sync_running"] = running is not None and running.is_alive()
+        return body
 
     @router.put("/api/settings")
     def put_settings(payload: dict, request: Request) -> dict:

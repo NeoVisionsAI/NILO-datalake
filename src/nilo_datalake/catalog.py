@@ -287,6 +287,48 @@ class Catalog:
             row = conn.execute("SELECT COALESCE(SUM(size_bytes), 0) AS n FROM objects").fetchone()
             return int(row["n"])
 
+    def latest_session_archive(self) -> sqlite3.Row | None:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT stored_at, session_id, logical_path, size_bytes
+                FROM objects
+                WHERE session_id != ''
+                ORDER BY stored_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+    def latest_database_backup(self, backup_buckets: list[str]) -> sqlite3.Row | None:
+        if not backup_buckets:
+            with self.connect() as conn:
+                return conn.execute(
+                    """
+                    SELECT stored_at, session_id, logical_path, size_bytes
+                    FROM objects
+                    WHERE session_id = ''
+                    ORDER BY stored_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+        clauses = []
+        params: list[str] = []
+        for name in backup_buckets:
+            clauses.append("logical_path LIKE ?")
+            params.append(f"{name}/%")
+        where = " OR ".join(clauses)
+        with self.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT stored_at, session_id, logical_path, size_bytes
+                FROM objects
+                WHERE session_id = '' AND ({where})
+                ORDER BY stored_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+
     def get_watermark(self, source_name: str) -> str | None:
         with self.connect() as conn:
             row = conn.execute(
