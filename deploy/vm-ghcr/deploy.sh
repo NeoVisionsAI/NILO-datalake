@@ -4,6 +4,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# usermod does not change the groups of a session that is already open.
+# sg starts this same script with the docker group, so a new SSH login is not required.
+if ! docker info >/dev/null 2>&1 && [[ -S /var/run/docker.sock && "${NILO_DOCKER_REEXEC:-}" != 1 ]]; then
+  if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+    echo "Adding ${USER} to the docker group..."
+    sudo usermod -aG docker "$USER"
+  fi
+  if id -nG "$USER" | tr ' ' '\n' | grep -qx docker && command -v sg >/dev/null 2>&1; then
+    echo "This login was opened before the docker group applied. Continuing with that group..."
+    quoted_args="$(printf '%q ' "$@")"
+    exec sg docker -c "NILO_DOCKER_REEXEC=1 exec $(printf '%q' "$0") ${quoted_args}"
+  fi
+fi
+
 if [[ ! -f credentials.env ]]; then
   echo "credentials.env is missing. Run ./configure.sh or copy credentials.env.example." >&2
   exit 1
@@ -55,9 +69,8 @@ ensure_docker() {
   if docker info >/dev/null 2>&1; then
     return 0
   fi
-  echo "Docker is installed, but this shell cannot talk to it." >&2
-  echo "Run: sudo usermod -aG docker \"$USER\"" >&2
-  echo "Then open a new login and run ./deploy.sh --ensure-minio again." >&2
+  echo "Docker is installed, but this shell cannot talk to the socket." >&2
+  echo "Run: sg docker -c './deploy.sh'" >&2
   return 1
 }
 

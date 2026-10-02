@@ -4,6 +4,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+if ! docker info >/dev/null 2>&1 && [[ -S /var/run/docker.sock && "${NILO_DOCKER_REEXEC:-}" != 1 ]]; then
+  if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
+    echo "Adding ${USER} to the docker group..."
+    sudo usermod -aG docker "$USER"
+  fi
+  if id -nG "$USER" | tr ' ' '\n' | grep -qx docker && command -v sg >/dev/null 2>&1; then
+    echo "This login was opened before the docker group applied. Continuing with that group..."
+    quoted_args="$(printf '%q ' "$@")"
+    exec sg docker -c "NILO_DOCKER_REEXEC=1 exec $(printf '%q' "$0") ${quoted_args}"
+  fi
+fi
+
 if [[ ! -f credentials.env ]]; then
   cp credentials.env.example credentials.env
   chmod 600 credentials.env
