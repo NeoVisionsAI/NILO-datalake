@@ -1,0 +1,109 @@
+# Production stack. The datalake image (API + web console) comes from GHCR.
+# MongoDB and MinIO are public images. No source tree is required on the VM.
+name: nilo-datalake
+
+services:
+  datalake:
+    image: ${SERVICE_IMAGE:?set SERVICE_IMAGE in credentials.env}
+    restart: always
+    environment:
+      NILO_CONFIG: /data/config/settings.yaml
+      NILO_BOOTSTRAP_CONFIG: /etc/nilo-datalake/settings.yaml
+      NILO_CONSOLE__USERNAME: ${NILO_CONSOLE_USERNAME:?set NILO_CONSOLE_USERNAME}
+      NILO_CONSOLE__PASSWORD: ${NILO_CONSOLE_PASSWORD:?set NILO_CONSOLE_PASSWORD}
+      NILO_INGEST__API_KEY: ${NILO_INGEST_API_KEY:?set NILO_INGEST_API_KEY}
+      NILO_PULL__MONGO__URI: mongodb://${MONGO_USER:?set MONGO_USER}:${MONGO_PASSWORD:?set MONGO_PASSWORD}@mongo:27017/?authSource=admin
+      NILO_PULL__MINIO__ENDPOINT: minio:9000
+      NILO_PULL__MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      NILO_PULL__MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    ports:
+      - "0.0.0.0:${HOST_PORT:-8088}:8088"
+    volumes:
+      - datalake:/data
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/v1/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  mongo:
+    image: mongo:7
+    restart: always
+    ports:
+      - "127.0.0.1:27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:?set MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?set MONGO_PASSWORD}
+    volumes:
+      - mongo:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--username",
+          "${MONGO_USER}",
+          "--password",
+          "${MONGO_PASSWORD}",
+          "--authenticationDatabase",
+          "admin",
+          "--eval",
+          "db.adminCommand('ping')",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  minio:
+    image: minio/minio:latest
+    restart: always
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/nilo-media
+        echo bucket-ready
+    restart: "no"
+
+volumes:
+  datalake:
+  mongo:
+  minio:

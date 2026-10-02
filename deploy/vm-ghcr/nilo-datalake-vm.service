@@ -1,0 +1,16 @@
+[Unit]
+Description=NILO datalake archive, console, MongoDB, and MinIO
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=@DIR@
+ExecStart=/usr/bin/bash @DIR@/deploy.sh --foreground
+ExecStop=/usr/bin/bash @DIR@/deploy.sh --stop
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

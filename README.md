@@ -156,6 +156,17 @@ docker compose exec datalake nilo-datalake status
 
 `docker compose up -d` is enough on a machine where Docker is already installed. `deploy.sh` is the command that also prepares the host.
 
+## Production on a VM (GHCR)
+
+A push to `main` publishes `ghcr.io/neovisionsai/nilo-datalake`. That image contains the archive API and the web console. The VM does not need a clone of this repository. MongoDB and MinIO start from public images in the same compose file.
+
+```bash
+cd ~/nilo-datalake
+./update.sh
+```
+
+First install, the console URL, and how secrets are copied only once are in [docs/10.ghcr_datalake.md](docs/10.ghcr_datalake.md). The shared pattern is [docs/09.ghcr_vm_deploy_standard.md](docs/09.ghcr_vm_deploy_standard.md).
+
 ## Console
 
 Open `http://127.0.0.1:8088/console` (the site root redirects there). The default login is the `NILO_CONSOLE_USERNAME` and `NILO_CONSOLE_PASSWORD` pair from `.env` (`admin` / `nilo-dev-key` until you change them). That password is only for the console. The ingest API key is separate.
