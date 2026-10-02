@@ -52,6 +52,21 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # A public repo does not make the GHCR package public; anonymous docker pull needs this.
+      - name: Make GHCR package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pkg="nilo-datalake"
+          owner="${{ github.repository_owner }}"
+          body='{"visibility":"public"}'
+          if gh api "/orgs/${owner}/packages/container/${pkg}" >/dev/null 2>&1; then
+            gh api --method PATCH "/orgs/${owner}/packages/container/${pkg}" --input - <<<"$body"
+          else
+            gh api --method PATCH "/users/${{ github.actor }}/packages/container/${pkg}" --input - <<<"$body"
+          fi
+
       - name: Upload VM deploy bundle
         uses: actions/upload-artifact@v4
         with:

@@ -44,11 +44,14 @@ nilo_ensure_ghcr_login() {
   local cred="${1:-credentials.env}"
   local user token
   if [[ ! -f "$cred" ]]; then
+    docker logout ghcr.io >/dev/null 2>&1 || true
     return 0
   fi
   user="$(nilo_env_value GHCR_USER "$cred")"
   token="$(nilo_env_value GHCR_TOKEN "$cred")"
   if [[ -z "$user" || -z "$token" ]]; then
+    # Stale docker login sends bad credentials and breaks anonymous pulls of public packages.
+    docker logout ghcr.io >/dev/null 2>&1 || true
     return 0
   fi
   if echo "$token" | docker login ghcr.io -u "$user" --password-stdin >/dev/null 2>&1; then
@@ -63,13 +66,17 @@ nilo_explain_ghcr_unauthorized() {
   cat >&2 <<EOF
 GHCR refused to pull ${image} (unauthorized).
 
+The GitHub repo can be public while this container package is still private (anonymous pull gets unauthorized).
+
 Fix one of these, then run ./deploy.sh or ./update.sh again:
 
-  1) ./configure.sh — set GitHub user (8) and token (9), save, then ./deploy.sh
+  1) GitHub (org NeoVisionsAI) → Packages → nilo-datalake → Package settings → Change visibility → Public
+     (not only the repository visibility)
 
-  2) GitHub → Packages → nilo-datalake → Package settings → Public
+  2) Push to main so the Publish GHCR workflow runs (it sets the package public after each push).
 
-  3) Confirm the publish workflow on main succeeded:
-     https://github.com/NeoVisionsAI/NILO-datalake/actions
+  3) ./configure.sh — GitHub user (8) and token (9) with read:packages, save, then ./deploy.sh
+
+If the package is already public, run ./deploy.sh once more (the script runs docker logout ghcr.io when 8–9 are empty).
 EOF
 }
