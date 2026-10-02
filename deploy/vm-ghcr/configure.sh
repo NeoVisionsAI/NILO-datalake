@@ -115,6 +115,38 @@ console_page_up() {
   [[ "$code" == 200 ]] && grep -q "NILO archive console" "$page_file"
 }
 
+test_ghcr_pull() {
+  local image="${CFG[SERVICE_IMAGE]:-}"
+  local log
+  if [[ -z "$image" ]]; then
+    echo "Set SERVICE_IMAGE first (menu 7)." >&2
+    return 1
+  fi
+  echo "Pulling ${image} ..."
+  log="$(mktemp)"
+  if docker pull "$image" >"$log" 2>&1; then
+    rm -f "$log"
+    echo "GHCR pull succeeded. You can run ./deploy.sh or w."
+    return 0
+  fi
+  cat "$log" >&2
+  if grep -qiE 'unauthorized|denied|permission' "$log"; then
+    cat >&2 <<EOF
+
+GHCR returned unauthorized.
+
+  • GitHub → Packages → nilo-datalake → make the package Public, or
+  • docker login ghcr.io with a token that has read:packages:
+      echo TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+
+Check that the Actions workflow on main published the image:
+  https://github.com/NeoVisionsAI/NILO-datalake/actions
+EOF
+  fi
+  rm -f "$log"
+  return 1
+}
+
 check_web() {
   local port="${CFG[HOST_PORT]:-8088}"
   local base="http://127.0.0.1:${port}"
@@ -187,6 +219,7 @@ NILO datalake — credentials
   7) Image                     ${CFG[SERVICE_IMAGE]:-}
   s) Save
   m) Install MinIO if it is not already running
+  g) Test pull of the datalake image from GHCR
   w) Start the console if needed, then test the page and login
   q) Quit
 EOF
@@ -224,6 +257,7 @@ EOF
       save
       ./deploy.sh --ensure-minio || true
       ;;
+    g) test_ghcr_pull || true ;;
     w) check_web || true ;;
     q) exit 0 ;;
     *) echo "Unknown option." ;;

@@ -53,6 +53,48 @@ compose() {
   docker compose --env-file credentials.env "$@"
 }
 
+explain_ghcr_unauthorized() {
+  local image="$1"
+  cat >&2 <<EOF
+GHCR refused to pull ${image} (unauthorized).
+
+The MinIO containers can run without this image. The archive and the web console need it.
+
+Fix one of these:
+
+  1) Make the package public on GitHub:
+     Packages → nilo-datalake → Package settings → Change visibility → Public
+
+  2) Log in on this VM (PAT with read:packages):
+     echo YOUR_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+
+  3) Confirm the publish workflow on main succeeded and pushed an image:
+     https://github.com/NeoVisionsAI/NILO-datalake/actions
+
+Then run: sg docker -c './deploy.sh'
+EOF
+}
+
+pull_datalake_image() {
+  local image log
+  image="$(env_value SERVICE_IMAGE)"
+  if [[ -z "$image" ]]; then
+    echo "SERVICE_IMAGE is empty in credentials.env." >&2
+    return 1
+  fi
+  log="$(mktemp)"
+  if compose pull datalake >"$log" 2>&1; then
+    rm -f "$log"
+    return 0
+  fi
+  cat "$log" >&2
+  if grep -qiE 'unauthorized|denied|permission' "$log"; then
+    explain_ghcr_unauthorized "$image"
+  fi
+  rm -f "$log"
+  return 1
+}
+
 minio_is_up() {
   curl -fsS --max-time 3 http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1
 }
@@ -154,7 +196,6 @@ fi
 port="$(env_value HOST_PORT)"
 port="${port:-8088}"
 
-compose pull
 if ! ensure_minio; then
   echo "MinIO did not start. The console was not started." >&2
   exit 1
@@ -162,6 +203,10 @@ fi
 if ! compose run --rm --no-deps minio-init; then
   echo "MinIO is up, but the buckets were not created. Starting the console anyway." >&2
   compose logs --tail 30 minio-init >&2 || true
+fi
+if ! pull_datalake_image; then
+  echo "The datalake image was not pulled. The console was not started." >&2
+  exit 1
 fi
 compose up -d --remove-orphans datalake
 
