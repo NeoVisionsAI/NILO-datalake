@@ -142,7 +142,15 @@ port="$(env_value HOST_PORT)"
 port="${port:-8088}"
 
 compose pull
-compose up -d --remove-orphans --wait
+if ! ensure_minio; then
+  echo "MinIO did not start. The console was not started." >&2
+  exit 1
+fi
+if ! compose run --rm --no-deps minio-init; then
+  echo "MinIO is up, but the buckets were not created. Starting the console anyway." >&2
+  compose logs --tail 30 minio-init >&2 || true
+fi
+compose up -d --remove-orphans datalake
 
 echo "Waiting for the console and the archive API on port ${port}..."
 ok=0
@@ -158,7 +166,8 @@ done
 
 if [[ "$ok" != 1 ]]; then
   echo "The datalake container did not answer on port ${port}." >&2
-  compose logs --tail 50 datalake >&2 || true
+  compose ps >&2 || true
+  compose logs --tail 80 datalake >&2 || true
   exit 1
 fi
 

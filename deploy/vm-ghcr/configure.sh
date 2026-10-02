@@ -86,20 +86,37 @@ prompt_value() {
   fi
 }
 
+explain_console_down() {
+  local port="$1"
+  echo "Nothing is accepting connections on 127.0.0.1:${port}." >&2
+  echo "Container status:" >&2
+  docker compose --env-file credentials.env ps >&2 || true
+  echo "Last datalake logs:" >&2
+  docker compose --env-file credentials.env logs --tail 40 datalake >&2 || true
+}
+
 check_web() {
   local port="${CFG[HOST_PORT]:-8088}"
   local base="http://127.0.0.1:${port}"
   local user="${CFG[NILO_CONSOLE_USERNAME]:-}"
   local pass="${CFG[NILO_CONSOLE_PASSWORD]:-}"
-  local page_file login_file settings_file jar code
+  local page_file login_file settings_file jar code attempt
   page_file="$(mktemp)"
   login_file="$(mktemp)"
   settings_file="$(mktemp)"
   jar="$(mktemp)"
   echo "Checking ${base}/console ..."
-  code="$(curl -sS -L --max-time 5 -o "$page_file" -w '%{http_code}' "${base}/console" || true)"
+  code=""
+  for attempt in $(seq 1 10); do
+    code="$(curl -sS -L --max-time 5 -o "$page_file" -w '%{http_code}' "${base}/console" || true)"
+    if [[ "$code" == 200 ]] && grep -q "NILO archive console" "$page_file"; then
+      break
+    fi
+    sleep 2
+  done
   if [[ "$code" != 200 ]] || ! grep -q "NILO archive console" "$page_file"; then
-    echo "The console page is not up (HTTP ${code:-none}). Start the stack with ./deploy.sh." >&2
+    echo "The console page is not up (HTTP ${code:-000})." >&2
+    explain_console_down "$port"
     rm -f "$page_file" "$login_file" "$settings_file" "$jar"
     return 1
   fi

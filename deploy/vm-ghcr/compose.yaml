@@ -21,8 +21,8 @@ services:
     volumes:
       - datalake:/data
     depends_on:
-      minio-init:
-        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
     healthcheck:
       test:
         [
