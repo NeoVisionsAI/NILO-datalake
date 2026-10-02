@@ -19,6 +19,13 @@ fi
 mkdir -p "$DIR"
 cd "$DIR"
 
+if [[ ! -f _lib.sh ]]; then
+  echo "fetch _lib.sh"
+  curl -fsSL "${BASE}/_lib.sh" -o _lib.sh.partial
+  mv _lib.sh.partial _lib.sh
+  chmod 644 _lib.sh
+fi
+
 fetch() {
   local name="$1"
   curl -fsSL "${BASE}/${name}" -o "${name}.partial"
