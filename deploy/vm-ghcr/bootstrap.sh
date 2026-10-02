@@ -26,6 +26,7 @@ fetch() {
 }
 
 FILES=(
+  _lib.sh
   compose.yaml
   credentials.env.example
   configure.sh
@@ -58,14 +59,23 @@ fetch_bootstrap() {
 
 fetch_bootstrap
 chmod 755 bootstrap.sh configure.sh deploy.sh update.sh sync.sh run.sh
+chmod 644 _lib.sh 2>/dev/null || true
 
 minio_password="$(grep -E '^MINIO_ROOT_PASSWORD=' credentials.env | tail -n 1 | cut -d= -f2- || true)"
 case "$minio_password" in
   ""|CHANGE_ME|nilo-dev-key|nilo-secret|change-me)
-    echo "MinIO is not installed yet. Run ./configure.sh, set the MinIO password, and choose m."
+    echo "MinIO is not installed yet. Run ./configure.sh, set secrets, save (s), then m or w."
     ;;
   *)
     ./deploy.sh --ensure-minio
     ;;
 esac
-echo "Scripts are in ${DIR}."
+cat <<EOF
+
+Scripts updated in ${DIR}.
+
+  ./configure.sh  — passwords; 8–9 only if the GHCR package is private
+  ./deploy.sh     — start or refresh MinIO + archive + console
+  ./update.sh     — bootstrap + deploy (use after each push to main)
+
+EOF

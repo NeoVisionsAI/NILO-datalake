@@ -3,18 +3,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-
-if ! docker info >/dev/null 2>&1 && [[ -S /var/run/docker.sock && "${NILO_DOCKER_REEXEC:-}" != 1 ]]; then
-  if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
-    echo "Adding ${USER} to the docker group..."
-    sudo usermod -aG docker "$USER"
-  fi
-  if id -nG "$USER" | tr ' ' '\n' | grep -qx docker && command -v sg >/dev/null 2>&1; then
-    echo "This login was opened before the docker group applied. Continuing with that group..."
-    quoted_args="$(printf '%q ' "$@")"
-    exec sg docker -c "NILO_DOCKER_REEXEC=1 exec $(printf '%q' "$0") ${quoted_args}"
-  fi
-fi
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+nilo_ensure_docker_session "$0" "$@" || exit 1
 
 if [[ ! -f credentials.env ]]; then
   cp credentials.env.example credentials.env
@@ -48,6 +39,8 @@ NILO_CONSOLE_PASSWORD=${CFG[NILO_CONSOLE_PASSWORD]}
 NILO_INGEST_API_KEY=${CFG[NILO_INGEST_API_KEY]}
 MINIO_ROOT_USER=${CFG[MINIO_ROOT_USER]}
 MINIO_ROOT_PASSWORD=${CFG[MINIO_ROOT_PASSWORD]}
+GHCR_USER=${CFG[GHCR_USER]:-}
+GHCR_TOKEN=${CFG[GHCR_TOKEN]:-}
 EOF
   mv "$tmp" credentials.env
   chmod 600 credentials.env
@@ -113,38 +106,6 @@ console_page_up() {
   local code
   code="$(curl -s -L --max-time 5 -o "$page_file" -w '%{http_code}' "${base}/console" 2>/dev/null || true)"
   [[ "$code" == 200 ]] && grep -q "NILO archive console" "$page_file"
-}
-
-test_ghcr_pull() {
-  local image="${CFG[SERVICE_IMAGE]:-}"
-  local log
-  if [[ -z "$image" ]]; then
-    echo "Set SERVICE_IMAGE first (menu 7)." >&2
-    return 1
-  fi
-  echo "Pulling ${image} ..."
-  log="$(mktemp)"
-  if docker pull "$image" >"$log" 2>&1; then
-    rm -f "$log"
-    echo "GHCR pull succeeded. You can run ./deploy.sh or w."
-    return 0
-  fi
-  cat "$log" >&2
-  if grep -qiE 'unauthorized|denied|permission' "$log"; then
-    cat >&2 <<EOF
-
-GHCR returned unauthorized.
-
-  • GitHub → Packages → nilo-datalake → make the package Public, or
-  • docker login ghcr.io with a token that has read:packages:
-      echo TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
-
-Check that the Actions workflow on main published the image:
-  https://github.com/NeoVisionsAI/NILO-datalake/actions
-EOF
-  fi
-  rm -f "$log"
-  return 1
 }
 
 check_web() {
@@ -217,9 +178,10 @@ NILO datalake — credentials
   5) MinIO password
   6) Published port            ${CFG[HOST_PORT]:-8088}
   7) Image                     ${CFG[SERVICE_IMAGE]:-}
+  8) GitHub user (GHCR, optional) ${CFG[GHCR_USER]:-}
+  9) GitHub token (GHCR, optional)
   s) Save
   m) Install MinIO if it is not already running
-  g) Test pull of the datalake image from GHCR
   w) Start the console if needed, then test the page and login
   q) Quit
 EOF
@@ -232,6 +194,8 @@ EOF
     5) prompt_value MINIO_ROOT_PASSWORD "MinIO password" secret ;;
     6) prompt_value HOST_PORT "Host port for the console and the API" ;;
     7) prompt_value SERVICE_IMAGE "Image" ;;
+    8) prompt_value GHCR_USER "GitHub user for private GHCR package" ;;
+    9) prompt_value GHCR_TOKEN "GitHub token (read:packages)" secret ;;
     s)
       if ! require_secret NILO_CONSOLE_PASSWORD \
         || ! require_secret NILO_INGEST_API_KEY \
@@ -257,7 +221,6 @@ EOF
       save
       ./deploy.sh --ensure-minio || true
       ;;
-    g) test_ghcr_pull || true ;;
     w) check_web || true ;;
     q) exit 0 ;;
     *) echo "Unknown option." ;;

@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# One command after each push: refresh scripts and pull the GHCR image.
+# After each push: refresh scripts from GitHub and redeploy (same as bootstrap + deploy).
 set -euo pipefail
 
 cd "$(dirname "$0")"
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+nilo_ensure_docker_session "$0" "$@" || exit 1
 
 case "${1:-all}" in
   all)

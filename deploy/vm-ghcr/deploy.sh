@@ -3,20 +3,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-
-# usermod does not change the groups of a session that is already open.
-# sg starts this same script with the docker group, so a new SSH login is not required.
-if ! docker info >/dev/null 2>&1 && [[ -S /var/run/docker.sock && "${NILO_DOCKER_REEXEC:-}" != 1 ]]; then
-  if ! id -nG "$USER" | tr ' ' '\n' | grep -qx docker; then
-    echo "Adding ${USER} to the docker group..."
-    sudo usermod -aG docker "$USER"
-  fi
-  if id -nG "$USER" | tr ' ' '\n' | grep -qx docker && command -v sg >/dev/null 2>&1; then
-    echo "This login was opened before the docker group applied. Continuing with that group..."
-    quoted_args="$(printf '%q ' "$@")"
-    exec sg docker -c "NILO_DOCKER_REEXEC=1 exec $(printf '%q' "$0") ${quoted_args}"
-  fi
-fi
+# shellcheck source=_lib.sh
+source "$(dirname "$0")/_lib.sh"
+nilo_ensure_docker_session "$0" "$@" || exit 1
 
 if [[ ! -f credentials.env ]]; then
   echo "credentials.env is missing. Run ./configure.sh or copy credentials.env.example." >&2
@@ -24,10 +13,7 @@ if [[ ! -f credentials.env ]]; then
 fi
 
 env_value() {
-  local key="$1"
-  local line
-  line="$(grep -E "^${key}=" credentials.env | tail -n 1 || true)"
-  printf '%s' "${line#"${key}"=}"
+  nilo_env_value "$1" credentials.env
 }
 
 reject_placeholder() {
@@ -53,28 +39,6 @@ compose() {
   docker compose --env-file credentials.env "$@"
 }
 
-explain_ghcr_unauthorized() {
-  local image="$1"
-  cat >&2 <<EOF
-GHCR refused to pull ${image} (unauthorized).
-
-The MinIO containers can run without this image. The archive and the web console need it.
-
-Fix one of these:
-
-  1) Make the package public on GitHub:
-     Packages → nilo-datalake → Package settings → Change visibility → Public
-
-  2) Log in on this VM (PAT with read:packages):
-     echo YOUR_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
-
-  3) Confirm the publish workflow on main succeeded and pushed an image:
-     https://github.com/NeoVisionsAI/NILO-datalake/actions
-
-Then run: sg docker -c './deploy.sh'
-EOF
-}
-
 pull_datalake_image() {
   local image log
   image="$(env_value SERVICE_IMAGE)"
@@ -82,6 +46,7 @@ pull_datalake_image() {
     echo "SERVICE_IMAGE is empty in credentials.env." >&2
     return 1
   fi
+  nilo_ensure_ghcr_login credentials.env || return 1
   log="$(mktemp)"
   if compose pull datalake >"$log" 2>&1; then
     rm -f "$log"
@@ -89,7 +54,7 @@ pull_datalake_image() {
   fi
   cat "$log" >&2
   if grep -qiE 'unauthorized|denied|permission' "$log"; then
-    explain_ghcr_unauthorized "$image"
+    nilo_explain_ghcr_unauthorized "$image"
   fi
   rm -f "$log"
   return 1
@@ -112,7 +77,7 @@ ensure_docker() {
     return 0
   fi
   echo "Docker is installed, but this shell cannot talk to the socket." >&2
-  echo "Run: sg docker -c './deploy.sh'" >&2
+  echo "Run ./deploy.sh again (the script applies the docker group automatically)." >&2
   return 1
 }
 
@@ -176,7 +141,9 @@ case "${1:-}" in
       reject_placeholder NILO_INGEST_API_KEY
       reject_placeholder MINIO_ROOT_PASSWORD
     fi
-    compose pull
+    ensure_minio
+    compose run --rm --no-deps minio-init || true
+    pull_datalake_image
     exec docker compose --env-file credentials.env up --remove-orphans
     ;;
   "")
