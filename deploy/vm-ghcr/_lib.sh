@@ -70,13 +70,14 @@ The GitHub repo can be public while this container package is still private (ano
 
 Fix one of these, then run ./deploy.sh or ./update.sh again:
 
-  1) GitHub (org NeoVisionsAI) → Packages → nilo-datalake → Package settings → Change visibility → Public
-     (not only the repository visibility)
+  1) Org admin (one time): open
+     https://github.com/orgs/NeoVisionsAI/packages/container/package/nilo-datalake/settings
+     → Change visibility → Public
+     (link the package to repo NILO-datalake if GitHub offers it)
 
-  2) Push to main so the Publish GHCR workflow runs (it sets the package public after each push).
+  2) ./configure.sh — GitHub user (8) and classic PAT (9) with read:packages, save (s), then ./deploy.sh
+     (works while the package stays private)
 
-  3) ./configure.sh — GitHub user (8) and token (9) with read:packages, save, then ./deploy.sh
-
-If the package is already public, run ./deploy.sh once more (the script runs docker logout ghcr.io when 8–9 are empty).
+If you already set Public in the UI, run ./deploy.sh again (empty 8–9 runs docker logout ghcr.io before pull).
 EOF
 }

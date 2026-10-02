@@ -13,6 +13,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,7 +33,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker metadata
@@ -52,19 +55,21 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # A public repo does not make the GHCR package public; anonymous docker pull needs this.
+      # Org-owned GHCR packages often cannot be switched to public via API (403/404).
+      # One-time UI: org Packages → nilo-datalake → Change visibility → Public.
       - name: Make GHCR package public
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
           pkg="nilo-datalake"
           owner="${{ github.repository_owner }}"
-          body='{"visibility":"public"}'
-          if gh api "/orgs/${owner}/packages/container/${pkg}" >/dev/null 2>&1; then
-            gh api --method PATCH "/orgs/${owner}/packages/container/${pkg}" --input - <<<"$body"
+          if gh api --method PATCH "/orgs/${owner}/packages/container/${pkg}" \
+              -f visibility=public 2>/tmp/ghcr-vis.err; then
+            echo "Package visibility set to public."
           else
-            gh api --method PATCH "/users/${{ github.actor }}/packages/container/${pkg}" --input - <<<"$body"
+            cat /tmp/ghcr-vis.err >&2 || true
+            echo "::warning::Could not set GHCR visibility from CI. Org admin: https://github.com/orgs/${owner}/packages/container/package/${pkg}/settings → Change visibility → Public. Until then, set GitHub user/token in ./configure.sh (8–9) on the VM."
           fi
 
       - name: Upload VM deploy bundle
