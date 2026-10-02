@@ -73,6 +73,7 @@ def apply_form(current: Settings, payload: dict) -> Settings:
         )
     elif not updated.pull.mongo.uri:
         updated.pull.mongo.uri = current.pull.mongo.uri
+    updated.pull.ssh.enabled = True
     _check(updated)
     return updated
 

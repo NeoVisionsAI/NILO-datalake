@@ -5,10 +5,8 @@ const sections = [
   ["schedule", "Schedule"],
   ["storage", "Storage"],
   ["minio", "MinIO"],
-  ["http", "Backend API"],
-  ["ssh", "SSH"],
-  ["ingest", "Ingest"],
-  ["edge", "Edge"],
+  ["ingress", "Data ingress"],
+  ["api", "Archive API"],
   ["account", "Account"],
 ];
 
@@ -16,7 +14,11 @@ let state = null;
 let dashboard = null;
 let section = "overview";
 let message = null;
-let connectionTests = { minio: null, http: null };
+let connectionTests = { minio: null, pull: null, ingest: null, direct: null };
+let storageBrowse = { open: false, path: "/", volume: null };
+let pathChecks = {};
+let openApiDoc = null;
+let openApiLoading = false;
 
 boot();
 
@@ -152,9 +154,16 @@ function renderSection() {
   }
   if (section === "schedule") {
     const cron = text(settings.pull.schedule, (value) => { settings.pull.schedule = value; });
+    const cronHelp = el("p", { className: "hint" });
+    cronHelp.append(
+      "Build or check cron expressions at ",
+      el("a", { className: "ext-link", href: "https://crontab.guru/", target: "_blank", rel: "noopener", textContent: "crontab.guru" }),
+      ".",
+    );
     root.append(
       check("Pull from MinIO and other backends on a schedule", settings.pull.enabled, (value) => { settings.pull.enabled = value; }),
       field("Cron (minute hour day month weekday)", cron),
+      cronHelp,
       el("div", { className: "row" }, [
         button("Daily at 02:00", "ghost", () => { settings.pull.schedule = "0 2 * * *"; renderApp(); }),
         button("Hourly", "ghost", () => { settings.pull.schedule = "0 * * * *"; renderApp(); }),
@@ -169,19 +178,29 @@ function renderSection() {
     );
   }
   if (section === "storage") {
-    root.append(el("p", { className: "hint", textContent: "The first enabled disk is filled first. Sizes are in GiB." }));
+    root.append(el("p", { className: "hint", textContent: "The first enabled disk is filled first. Sizes are in GiB. Check that each path exists before saving." }));
     for (const volume of settings.storage.volumes) {
-      const row = el("div", { className: "list-row" });
+      const row = el("div", { className: "list-row storage-vol" });
+      const pathInput = text(volume.root, (value) => {
+        volume.root = value;
+        delete pathChecks[volume.id];
+      });
       row.append(
         labeled("Id", text(volume.id, (value) => { volume.id = value; })),
-        labeled("Path", text(volume.root, (value) => { volume.root = value; })),
-        labeled("Enabled", checkbox(volume.enabled, (value) => { volume.enabled = value; })),
+        labeled("Path", pathInput),
+        el("span", { className: pathStatusClass(volume.id), textContent: pathStatusText(volume.id) }),
+        button("Check", "ghost", () => checkVolumePath(volume)),
+        button("Browse…", "ghost", () => openStorageBrowse(volume)),
+        labeled("On", checkbox(volume.enabled, (value) => { volume.enabled = value; })),
         button("Remove", "danger", () => {
           settings.storage.volumes = settings.storage.volumes.filter((item) => item !== volume);
           renderApp();
         }),
       );
       root.append(row);
+    }
+    if (storageBrowse.open) {
+      root.append(renderFolderBrowser());
     }
     root.append(button("Add disk", "ghost", () => {
       settings.storage.volumes.push({ id: "disk" + (settings.storage.volumes.length + 1), root: "", enabled: false });
@@ -222,65 +241,15 @@ function renderSection() {
       renderApp();
     }));
   }
-  if (section === "http") {
-    const http = settings.pull.http;
-    root.append(
-      check("Pull the backend archive API", http.enabled, (value) => { http.enabled = value; }),
-      field("Base URL", text(http.base_url, (value) => { http.base_url = value; })),
-      secretField("API key", http.api_key, state.secrets_set.includes("pull.http.api_key"), (value) => { http.api_key = value; }),
-      field("Page size", number(http.page_limit, (value) => { http.page_limit = value; })),
-      field("Timeout (seconds)", number(http.timeout_seconds, (value) => { http.timeout_seconds = value; })),
-      renderConnectionTest("http", "Test backend API", "Calls the changes endpoint with the API key above."),
-    );
+  if (section === "ingress") {
+    root.append(renderIngress());
   }
-  if (section === "ssh") {
-    const ssh = settings.pull.ssh;
-    root.append(
-      check("Pull sessions over SSH", ssh.enabled, (value) => { ssh.enabled = value; }),
-      field("rsync binary", text(ssh.binary, (value) => { ssh.binary = value; })),
-      field("SSH command", text(ssh.ssh_command, (value) => { ssh.ssh_command = value; })),
-    );
-    for (const source of ssh.sources) {
-      const row = el("div", { className: "list-row ssh" });
-      row.append(
-        labeled("Name", text(source.name, (value) => { source.name = value; })),
-        labeled("Remote", text(source.remote, (value) => { source.remote = value; })),
-        labeled("Delete after copy", checkbox(source.delete_after, (value) => { source.delete_after = value; })),
-        button("Remove", "danger", () => {
-          ssh.sources = ssh.sources.filter((item) => item !== source);
-          renderApp();
-        }),
-      );
-      root.append(row);
+  if (section === "api") {
+    if (!openApiDoc && !openApiLoading) {
+      openApiLoading = true;
+      loadOpenApiDoc().finally(() => { openApiLoading = false; });
     }
-    root.append(button("Add source", "ghost", () => {
-      ssh.sources.push({ name: "", remote: "", delete_after: false });
-      renderApp();
-    }));
-  }
-  if (section === "ingest") {
-    const ingest = settings.ingest;
-    root.append(
-      check("Accept pushes", ingest.enabled, (value) => { ingest.enabled = value; }),
-      field("Bind host", text(ingest.host, (value) => { ingest.host = value; })),
-      field("Port", number(ingest.port, (value) => { ingest.port = value; })),
-      secretField("API key", ingest.api_key, state.secrets_set.includes("ingest.api_key"), (value) => { ingest.api_key = value; }),
-      el("p", { className: "hint", textContent: "Changing the host or port is saved immediately and used after Restart service." }),
-    );
-  }
-  if (section === "edge") {
-    const edge = settings.edge;
-    root.append(
-      field("Spool directory", text(edge.spool_dir, (value) => { edge.spool_dir = value; })),
-      field("Transport", select(edge.transport, ["http", "rsync"], (value) => { edge.transport = value; })),
-      field("Interval (minutes)", text(String(Math.round(edge.interval_seconds / 60)), (value) => { edge.interval_seconds = Math.max(1, Number(value) || 1) * 60; })),
-      field("Datalake URL", text(edge.datalake_url, (value) => { edge.datalake_url = value; })),
-      secretField("API key", edge.api_key, state.secrets_set.includes("edge.api_key"), (value) => { edge.api_key = value; }),
-      field("rsync target", text(edge.rsync_target, (value) => { edge.rsync_target = value; })),
-      field("rsync binary", text(edge.rsync_binary, (value) => { edge.rsync_binary = value; })),
-      field("Source name", text(edge.source_name, (value) => { edge.source_name = value; })),
-      field("Timeout (seconds)", number(edge.timeout_seconds, (value) => { edge.timeout_seconds = value; })),
-    );
+    root.append(renderApiDoc());
   }
   if (section === "account") {
     root.append(
@@ -366,6 +335,196 @@ function backupDetail(row) {
   if (row.size_bytes) parts.push(formatBytes(row.size_bytes));
   if (row.path && row.path !== row.label) parts.push(row.path);
   return parts.join(" · ") || "Archived from MinIO";
+}
+
+function renderIngress() {
+  const settings = state.settings;
+  const http = settings.pull.http;
+  const ingest = settings.ingest;
+  const ssh = settings.pull.ssh;
+  settings.pull.ssh.enabled = true;
+  const grid = el("div", { className: "ingress-grid" });
+
+  const pullCard = el("div", { className: "mode-card" });
+  pullCard.append(
+    el("span", { className: "tag", textContent: "Option A" }),
+    el("h2", { textContent: "Pull from a remote server" }),
+    el("p", { className: "lede", textContent: "This archive calls a remote HTTP API and copies the changes it returns." }),
+    check("Enabled", http.enabled, (value) => { http.enabled = value; }),
+    field("Remote base URL", text(http.base_url, (value) => { http.base_url = value; })),
+    secretField("Remote API key", http.api_key, state.secrets_set.includes("pull.http.api_key"), (value) => { http.api_key = value; }),
+    field("Page size", number(http.page_limit, (value) => { http.page_limit = value; })),
+    field("Timeout (seconds)", number(http.timeout_seconds, (value) => { http.timeout_seconds = value; })),
+    renderConnectionTest("pull", "Test remote API", "Calls the remote /changes endpoint."),
+  );
+
+  const pushCard = el("div", { className: "mode-card" });
+  pushCard.append(
+    el("span", { className: "tag", textContent: "Option B" }),
+    el("h2", { textContent: "Push into this datalake" }),
+    el("p", { className: "lede", textContent: "Another system uploads batches to the ingest API on this host (Ethernet or routed TCP)." }),
+    check("Accept pushes", ingest.enabled, (value) => { ingest.enabled = value; }),
+    field("Bind host", text(ingest.host, (value) => { ingest.host = value; })),
+    field("Port", number(ingest.port, (value) => { ingest.port = value; })),
+    secretField("Ingest API key", ingest.api_key, state.secrets_set.includes("ingest.api_key"), (value) => { ingest.api_key = value; }),
+    el("p", { className: "hint", textContent: "Host/port changes need Restart service. See Archive API for the full contract." }),
+    renderConnectionTest("ingest", "Test ingest API", "Checks /v1/health and /v1/status on this machine."),
+  );
+
+  const directCard = el("div", { className: "mode-card" });
+  directCard.append(
+    el("span", { className: "tag", textContent: "Option C" }),
+    el("h2", { textContent: "Direct link (MiniPC / cable)" }),
+    el("p", { className: "lede", textContent: "rsync/scp drops and SSH/rsync pulls from a linked NILO node. SSH pull stays enabled." }),
+    check("Watch rsync/scp inbox folders", settings.inbox.enabled, (value) => { settings.inbox.enabled = value; }),
+    field("rsync binary", text(ssh.binary, (value) => { ssh.binary = value; })),
+    field("SSH command", text(ssh.ssh_command, (value) => { ssh.ssh_command = value; })),
+    renderConnectionTest("direct", "Test direct paths", "Lists active network links, inbox folders, and rsync sources."),
+  );
+  for (const source of ssh.sources) {
+    const row = el("div", { className: "list-row ssh" });
+    row.append(
+      labeled("Name", text(source.name, (value) => { source.name = value; })),
+      labeled("Remote path", text(source.remote, (value) => { source.remote = value; })),
+      labeled("Delete after copy", checkbox(source.delete_after, (value) => { source.delete_after = value; })),
+      button("Remove", "danger", () => {
+        ssh.sources = ssh.sources.filter((item) => item !== source);
+        renderApp();
+      }),
+    );
+    directCard.append(row);
+  }
+  directCard.append(button("Add rsync/SSH source", "ghost", () => {
+    ssh.sources.push({ name: "", remote: "", delete_after: false });
+    renderApp();
+  }));
+
+  grid.append(pullCard, pushCard, directCard);
+  return grid;
+}
+
+function renderApiDoc() {
+  const wrap = el("div", { className: "api-doc" });
+  wrap.append(
+    el("p", { className: "lede", textContent: "OpenAPI description of the archive ingest API (same routes a Swagger UI would list)." }),
+    button("Load / refresh API spec", "ghost", loadOpenApiDoc),
+  );
+  if (!openApiDoc) {
+    wrap.append(el("p", { className: "hint", textContent: openApiLoading ? "Loading OpenAPI spec…" : "Waiting for spec…" }));
+    return wrap;
+  }
+  const paths = openApiDoc.paths || {};
+  for (const [path, methods] of Object.entries(paths)) {
+    for (const [method, detail] of Object.entries(methods)) {
+      if (method === "parameters") continue;
+      const block = el("div", { className: "api-endpoint" });
+      block.append(
+        el("h3", {}, [
+          el("span", { className: "api-method", textContent: method.toUpperCase() }),
+          document.createTextNode(" " + path),
+        ]),
+      );
+      if (detail.summary) block.append(el("p", { textContent: detail.summary }));
+      if (detail.description) block.append(el("p", { textContent: detail.description }));
+      if (detail.requestBody) block.append(el("p", { textContent: "Request body: JSON (see schema in OpenAPI)." }));
+      wrap.append(block);
+    }
+  }
+  return wrap;
+}
+
+async function loadOpenApiDoc() {
+  const response = await fetch("/console/api/openapi");
+  if (response.status === 401) return renderLogin();
+  if (!response.ok) {
+    message = { kind: "error", text: await errorText(response) };
+    renderApp();
+    return;
+  }
+  openApiDoc = await response.json();
+  renderApp();
+}
+
+function pathStatusClass(volumeId) {
+  const check = pathChecks[volumeId];
+  if (!check) return "path-status";
+  return "path-status " + (check.ok ? "ok" : "bad");
+}
+
+function pathStatusText(volumeId) {
+  const check = pathChecks[volumeId];
+  if (!check) return "unchecked";
+  return check.detail || (check.ok ? "exists" : "missing");
+}
+
+async function checkVolumePath(volume) {
+  const path = volume.root || "/";
+  const response = await fetch("/console/api/storage/check?path=" + encodeURIComponent(path));
+  if (response.status === 401) return renderLogin();
+  const body = await response.json();
+  pathChecks[volume.id] = body;
+  renderApp();
+}
+
+function openStorageBrowse(volume) {
+  storageBrowse.open = true;
+  storageBrowse.volume = volume;
+  storageBrowse.path = volume.root || "/";
+  loadBrowse(storageBrowse.path);
+}
+
+async function loadBrowse(path) {
+  const response = await fetch("/console/api/storage/browse?path=" + encodeURIComponent(path || "/"));
+  if (response.status === 401) return renderLogin();
+  if (!response.ok) {
+    message = { kind: "error", text: await errorText(response) };
+    renderApp();
+    return;
+  }
+  const body = await response.json();
+  storageBrowse.path = body.path;
+  storageBrowse.entries = body.directories;
+  storageBrowse.parent = body.parent;
+  storageBrowse.roots = body.roots;
+  renderApp();
+}
+
+function renderFolderBrowser() {
+  const box = el("div", { className: "folder-browser" });
+  const head = el("div", { className: "folder-browser-head" });
+  head.append(
+    el("strong", { textContent: "Choose folder" }),
+    el("span", { className: "folder-browser-path", textContent: storageBrowse.path }),
+  );
+  if (storageBrowse.parent) {
+    head.append(button("Up", "ghost", () => loadBrowse(storageBrowse.parent)));
+  }
+  head.append(
+    button("Select this folder", "primary", () => {
+      if (storageBrowse.volume) {
+        storageBrowse.volume.root = storageBrowse.path;
+        delete pathChecks[storageBrowse.volume.id];
+      }
+      storageBrowse.open = false;
+      renderApp();
+    }),
+    button("Close", "ghost", () => {
+      storageBrowse.open = false;
+      renderApp();
+    }),
+  );
+  box.append(head);
+  const list = el("div", { className: "folder-list" });
+  for (const entry of storageBrowse.entries || []) {
+    const item = el("button", { type: "button", textContent: "📁 " + entry.name });
+    item.addEventListener("click", () => loadBrowse(entry.path));
+    list.append(item);
+  }
+  if (!(storageBrowse.entries || []).length) {
+    list.append(el("p", { className: "hint", textContent: "No subfolders (or cannot read this directory)." }));
+  }
+  box.append(list);
+  return box;
 }
 
 function renderConnectionTest(kind, label, description) {
@@ -459,7 +618,7 @@ async function logout() {
   await fetch("/console/api/logout", { method: "POST" });
   state = null;
   dashboard = null;
-  connectionTests = { minio: null, http: null };
+  connectionTests = { minio: null, pull: null, ingest: null, direct: null };
   renderLogin();
 }
 

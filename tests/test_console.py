@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -78,6 +79,19 @@ def test_login_and_settings_round_trip(ctx, tmp_path) -> None:
         assert "disks" in panel
         assert "last_session_backup" in panel
         assert "last_database_backup" in panel
+
+        spec = client.get("/console/api/openapi")
+        assert spec.status_code == 200
+        assert "/v1/health" in spec.json()["paths"]
+
+        vol_root = str(load_file_only(path).storage.volumes[0].root)
+        check = client.get("/console/api/storage/check", params={"path": vol_root})
+        assert check.status_code == 200
+        assert check.json()["exists"] is True
+
+        browse = client.get("/console/api/storage/browse", params={"path": vol_root})
+        assert browse.status_code == 200
+        assert browse.json()["path"] == str(Path(vol_root).resolve())
 
 
 def test_file_only_ignores_environment(tmp_path, monkeypatch) -> None:

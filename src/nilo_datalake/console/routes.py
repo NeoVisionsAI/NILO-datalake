@@ -12,7 +12,6 @@ import time
 from importlib.resources import files
 from pathlib import Path
 
-import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,11 +19,12 @@ from pydantic import BaseModel
 
 from nilo_datalake.config import Settings, save_settings
 from nilo_datalake.console.store import apply_form, view_settings
+from nilo_datalake.console.probes import probe_direct, probe_http_pull, probe_ingest
+from nilo_datalake.console.storage_browser import check_storage_path, list_storage_directories
 from nilo_datalake.console.summary import build_dashboard
 from nilo_datalake.errors import ConfigError
 from nilo_datalake.passwords import verify_password
 from nilo_datalake.service import build_context
-from nilo_datalake.sources.http_api import assert_download_url
 from nilo_datalake.sync import run_sync, start_scheduler
 
 log = logging.getLogger(__name__)
@@ -104,6 +104,24 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
         body = build_dashboard(ctx, last_sync=getattr(request.app.state, "last_sync", None))
         body["sync_running"] = running is not None and running.is_alive()
         return body
+
+    @router.get("/api/openapi")
+    def openapi_document(request: Request) -> dict:
+        _require(request)
+        return request.app.openapi()
+
+    @router.get("/api/storage/check")
+    def storage_check(request: Request, path: str) -> dict:
+        settings = _require(request)
+        return check_storage_path(settings, path)
+
+    @router.get("/api/storage/browse")
+    def storage_browse(request: Request, path: str = "/") -> dict:
+        settings = _require(request)
+        try:
+            return list_storage_directories(settings, path)
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.put("/api/settings")
     def put_settings(payload: dict, request: Request) -> dict:
@@ -242,26 +260,12 @@ def _probe(kind: str, settings: Settings) -> str:
         )
         names = [bucket.name for bucket in client.list_buckets()]
         return "MinIO answered, buckets: " + (", ".join(names) if names else "(none)")
-    if kind == "http":
-        if not settings.pull.http.base_url:
-            raise ConfigError("backend base URL is empty")
-        headers = {}
-        if settings.pull.http.api_key:
-            headers["Authorization"] = f"Bearer {settings.pull.http.api_key}"
-        target = settings.pull.http.base_url.rstrip("/") + "/changes"
-        assert_download_url(target)
-        response = httpx.get(
-            target,
-            params={"since": "", "limit": 1},
-            headers=headers,
-            timeout=10,
-            follow_redirects=False,
-        )
-        if 300 <= response.status_code < 400:
-            raise ConfigError(f"backend redirected to {response.headers.get('location', '')}")
-        if response.status_code >= 500:
-            raise ConfigError(f"backend returned {response.status_code}")
-        return f"backend returned {response.status_code}"
+    if kind in ("http", "pull"):
+        return probe_http_pull(settings)
+    if kind == "ingest":
+        return probe_ingest(settings)
+    if kind == "direct":
+        return probe_direct(settings)
     raise HTTPException(status_code=404, detail="unknown connection test")
 
 
