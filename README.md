@@ -131,20 +131,19 @@ sudo cp .env.example /etc/nilo-datalake/datalake.env
 
 `deploy.sh` is the first-boot path. It installs the host packages that are missing (`curl`, `rsync`, `openssh-client`, Docker, and the Compose plugin), writes `.env` from `config/docker.env.example` when that file is absent, and starts the stack. A later run only installs what is still missing and checks that each service answers. A failed check is printed in red with the command output and the container logs under it.
 
-MongoDB and MinIO run as containers. Debian does not ship current packages for either, so the script does not `apt install` them.
+MinIO runs as a container. Debian does not ship a current package for it, so the script does not `apt install` it. Database backups are files in the `nilo-backups` bucket. Capture sessions are objects in `nilo-media`. This stack does not open a MongoDB connection.
 
 ```bash
 ./deploy.sh
 ```
 
-The stack is three long-running containers plus a one-shot that creates the `nilo-media` bucket:
+The stack is the archive (API and web console), MinIO, and a one-shot that creates the `nilo-media` and `nilo-backups` buckets:
 
 | Service | Address |
 | --- | --- |
 | datalake | http://127.0.0.1:8088 (published on the host interfaces so the backend and the MiniPC can reach it) |
 | MinIO API | http://127.0.0.1:9000 (localhost only) |
 | MinIO console | http://127.0.0.1:9001 (localhost only) |
-| MongoDB | 127.0.0.1:27017 (localhost only) |
 
 The archive, the catalog, the traces, and the runtime settings live in the `datalake` volume, mounted at `/data` inside the container. The image starts from `config/settings.docker.yaml`. On the first start, values from `.env` are copied into `/data/config/settings.yaml`. After that file exists, the [console](#console) is the source of truth: editing `.env` does not change a running archive. Delete the `datalake` volume to seed again. Change the development key before pointing this at a hospital.
 
@@ -158,7 +157,7 @@ docker compose exec datalake nilo-datalake status
 
 ## Production on a VM (GHCR)
 
-A push to `main` publishes `ghcr.io/neovisionsai/nilo-datalake`. That image contains the archive API and the web console. The VM does not need a clone of this repository. MongoDB and MinIO start from public images in the same compose file.
+A push to `main` publishes `ghcr.io/neovisionsai/nilo-datalake`. That image contains the archive API and the web console. The VM does not need a clone of this repository. MinIO starts from its public image when `./configure.sh` or `./bootstrap.sh` finds it is not already running. MongoDB is not part of this stack: a database backup is a file in the `nilo-backups` bucket.
 
 ```bash
 cd ~/nilo-datalake

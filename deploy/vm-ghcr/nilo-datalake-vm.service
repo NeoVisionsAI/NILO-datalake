@@ -1,5 +1,5 @@
 [Unit]
-Description=NILO datalake archive, console, MongoDB, and MinIO
+Description=NILO datalake archive, console, and MinIO
 After=docker.service
 Requires=docker.service
 

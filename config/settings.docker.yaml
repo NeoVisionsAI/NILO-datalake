@@ -25,23 +25,21 @@ pull:
   schedule: "0 2 * * *"
   timezone: UTC
   safety_delay_seconds: 120
+  # Database backups arrive as files in MinIO. This process does not open MongoDB.
   mongo:
-    enabled: true
-    uri: mongodb://nilo:nilo-secret@mongo:27017/?authSource=admin
-    database: nilo
-    collections:
-      - name: sessions
-        timestamp_field: updated_at
-        chunk_size: 2000
+    enabled: false
   minio:
     enabled: true
     endpoint: minio:9000
     access_key: nilo
     secret_key: nilo-secret
     secure: false
+    # sessions/{id}/... is a capture session. Any other key is a backup blob.
     session_prefix: sessions/
     buckets:
       - name: nilo-media
+        prefix: ""
+      - name: nilo-backups
         prefix: ""
   http:
     enabled: false

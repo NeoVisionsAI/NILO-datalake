@@ -58,4 +58,14 @@ fetch_bootstrap() {
 
 fetch_bootstrap
 chmod 755 bootstrap.sh configure.sh deploy.sh update.sh sync.sh run.sh
+
+minio_password="$(grep -E '^MINIO_ROOT_PASSWORD=' credentials.env | tail -n 1 | cut -d= -f2- || true)"
+case "$minio_password" in
+  ""|CHANGE_ME|nilo-dev-key|nilo-secret|change-me)
+    echo "MinIO is not installed yet. Run ./configure.sh, set the MinIO password, and choose m."
+    ;;
+  *)
+    ./deploy.sh --ensure-minio
+    ;;
+esac
 echo "Scripts are in ${DIR}."

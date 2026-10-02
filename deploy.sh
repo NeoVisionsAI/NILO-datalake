@@ -183,12 +183,6 @@ wait_ready() {
 if docker compose version >/dev/null 2>&1; then
   wait_ready "datalake http://127.0.0.1:8088/v1/health" datalake \
     curl -fsS --max-time 3 http://127.0.0.1:8088/v1/health
-  wait_ready "MongoDB" mongo \
-    docker compose exec -T mongo mongosh --quiet \
-      --username "${MONGO_USER:-nilo}" \
-      --password "${MONGO_PASSWORD:-nilo-secret}" \
-      --authenticationDatabase admin \
-      --eval "db.adminCommand('ping')"
   wait_ready "MinIO http://127.0.0.1:9000/minio/health/live" minio \
     curl -fsS --max-time 3 http://127.0.0.1:9000/minio/health/live
 fi
@@ -208,6 +202,6 @@ printf "          user and password are NILO_CONSOLE_USERNAME and NILO_CONSOLE_P
 printf "          after the first start, change them in the console; a later .env edit is not copied\n"
 printf "  API     http://127.0.0.1:8088/v1/health\n"
 printf "  MinIO   http://127.0.0.1:9001   (user %s)\n" "${MINIO_ROOT_USER:-nilo}"
-printf "  Mongo   127.0.0.1:27017         (user %s)\n" "${MONGO_USER:-nilo}"
+printf "          buckets nilo-media (sessions) and nilo-backups (database dumps)\n"
 printf "  Traces  docker compose exec datalake nilo-datalake traces\n"
 printf "          also /data/traces/failures.jsonl inside the datalake volume\n\n"

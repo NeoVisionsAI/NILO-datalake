@@ -1,5 +1,5 @@
 # Production stack. The datalake image (API + web console) comes from GHCR.
-# MongoDB and MinIO are public images. No source tree is required on the VM.
+# MinIO holds capture sessions and database-dump files. This stack does not run MongoDB.
 name: nilo-datalake
 
 services:
@@ -12,7 +12,7 @@ services:
       NILO_CONSOLE__USERNAME: ${NILO_CONSOLE_USERNAME:?set NILO_CONSOLE_USERNAME}
       NILO_CONSOLE__PASSWORD: ${NILO_CONSOLE_PASSWORD:?set NILO_CONSOLE_PASSWORD}
       NILO_INGEST__API_KEY: ${NILO_INGEST_API_KEY:?set NILO_INGEST_API_KEY}
-      NILO_PULL__MONGO__URI: mongodb://${MONGO_USER:?set MONGO_USER}:${MONGO_PASSWORD:?set MONGO_PASSWORD}@mongo:27017/?authSource=admin
+      NILO_PULL__MONGO__ENABLED: "false"
       NILO_PULL__MINIO__ENDPOINT: minio:9000
       NILO_PULL__MINIO__ACCESS_KEY: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
       NILO_PULL__MINIO__SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
@@ -21,8 +21,6 @@ services:
     volumes:
       - datalake:/data
     depends_on:
-      mongo:
-        condition: service_healthy
       minio-init:
         condition: service_completed_successfully
     healthcheck:
@@ -37,36 +35,6 @@ services:
       timeout: 5s
       retries: 8
       start_period: 30s
-
-  mongo:
-    image: mongo:7
-    restart: always
-    ports:
-      - "127.0.0.1:27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:?set MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?set MONGO_PASSWORD}
-    volumes:
-      - mongo:/data/db
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "mongosh",
-          "--quiet",
-          "--username",
-          "${MONGO_USER}",
-          "--password",
-          "${MONGO_PASSWORD}",
-          "--authenticationDatabase",
-          "admin",
-          "--eval",
-          "db.adminCommand('ping')",
-        ]
-      interval: 10s
-      timeout: 10s
-      retries: 12
-      start_period: 20s
 
   minio:
     image: minio/minio:latest
@@ -100,10 +68,10 @@ services:
       - |
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
         mc mb --ignore-existing local/nilo-media
+        mc mb --ignore-existing local/nilo-backups
         echo bucket-ready
     restart: "no"
 
 volumes:
   datalake:
-  mongo:
   minio:

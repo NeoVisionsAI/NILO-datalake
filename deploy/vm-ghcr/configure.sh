@@ -34,16 +34,14 @@ HOST_PORT=${CFG[HOST_PORT]}
 NILO_CONSOLE_USERNAME=${CFG[NILO_CONSOLE_USERNAME]}
 NILO_CONSOLE_PASSWORD=${CFG[NILO_CONSOLE_PASSWORD]}
 NILO_INGEST_API_KEY=${CFG[NILO_INGEST_API_KEY]}
-MONGO_USER=${CFG[MONGO_USER]}
-MONGO_PASSWORD=${CFG[MONGO_PASSWORD]}
 MINIO_ROOT_USER=${CFG[MINIO_ROOT_USER]}
 MINIO_ROOT_PASSWORD=${CFG[MINIO_ROOT_PASSWORD]}
 EOF
   mv "$tmp" credentials.env
   chmod 600 credentials.env
   echo "Wrote credentials.env (mode 600)."
-  echo "First container start copies these values into the archive volume."
-  echo "After that, change them in the web console, then run ./deploy.sh only if MongoDB or MinIO must be recreated."
+  echo "The first datalake start copies these values into the archive volume."
+  echo "After that, change them in the web console."
 }
 
 is_safe() {
@@ -88,39 +86,47 @@ prompt_value() {
   fi
 }
 
-test_connections() {
+check_web() {
   local port="${CFG[HOST_PORT]:-8088}"
-  local failed=0
-  if curl -fsS --max-time 3 "http://127.0.0.1:${port}/v1/health" >/dev/null; then
-    echo "archive API ok"
-  else
-    echo "archive API did not answer on port ${port}" >&2
-    failed=1
+  local base="http://127.0.0.1:${port}"
+  local user="${CFG[NILO_CONSOLE_USERNAME]:-}"
+  local pass="${CFG[NILO_CONSOLE_PASSWORD]:-}"
+  local page_file login_file settings_file jar code
+  page_file="$(mktemp)"
+  login_file="$(mktemp)"
+  settings_file="$(mktemp)"
+  jar="$(mktemp)"
+  echo "Checking ${base}/console ..."
+  code="$(curl -sS -L --max-time 5 -o "$page_file" -w '%{http_code}' "${base}/console" || true)"
+  if [[ "$code" != 200 ]] || ! grep -q "NILO archive console" "$page_file"; then
+    echo "The console page is not up (HTTP ${code:-none}). Start the stack with ./deploy.sh." >&2
+    rm -f "$page_file" "$login_file" "$settings_file" "$jar"
+    return 1
   fi
-  if curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${port}/console"; then
-    echo "console ok"
-  else
-    echo "console did not answer on port ${port}" >&2
-    failed=1
+  echo "Console page is up."
+  if [[ -z "$user" || -z "$pass" || "$pass" == CHANGE_ME ]]; then
+    echo "Set the console username and password before testing login." >&2
+    rm -f "$page_file" "$login_file" "$settings_file" "$jar"
+    return 1
   fi
-  if curl -fsS --max-time 3 "http://127.0.0.1:9000/minio/health/live" >/dev/null; then
-    echo "MinIO ok"
-  else
-    echo "MinIO did not answer on 127.0.0.1:9000" >&2
-    failed=1
+  code="$(curl -sS --max-time 5 -o "$login_file" -w '%{http_code}' -c "$jar" \
+    -H 'content-type: application/json' \
+    -d "{\"username\":\"${user}\",\"password\":\"${pass}\"}" \
+    "${base}/console/api/login" || true)"
+  if [[ "$code" != 200 ]]; then
+    echo "Login failed (HTTP ${code:-none}). The page answers, but ${user} was rejected." >&2
+    echo "If the password was changed in the web console, credentials.env no longer matches the running service." >&2
+    rm -f "$page_file" "$login_file" "$settings_file" "$jar"
+    return 1
   fi
-  if docker compose --env-file credentials.env exec -T mongo \
-    mongosh --quiet \
-    --username "${CFG[MONGO_USER]}" \
-    --password "${CFG[MONGO_PASSWORD]}" \
-    --authenticationDatabase admin \
-    --eval "db.adminCommand('ping')" >/dev/null; then
-    echo "MongoDB ok"
-  else
-    echo "MongoDB did not answer. Start the stack with ./deploy.sh first." >&2
-    failed=1
+  code="$(curl -sS --max-time 5 -o "$settings_file" -w '%{http_code}' -b "$jar" \
+    "${base}/console/api/settings" || true)"
+  rm -f "$page_file" "$login_file" "$settings_file" "$jar"
+  if [[ "$code" != 200 ]]; then
+    echo "Login succeeded but the session could not open settings (HTTP ${code:-none})." >&2
+    return 1
   fi
-  return "$failed"
+  echo "Login succeeded for ${user}. The console is operational."
 }
 
 load
@@ -137,14 +143,13 @@ NILO datalake — credentials
   1) Console username          ${CFG[NILO_CONSOLE_USERNAME]:-}
   2) Console password
   3) Ingest API key
-  4) MongoDB user              ${CFG[MONGO_USER]:-}
-  5) MongoDB password
-  6) MinIO user                ${CFG[MINIO_ROOT_USER]:-}
-  7) MinIO password
-  8) Published port            ${CFG[HOST_PORT]:-8088}
-  9) Image                     ${CFG[SERVICE_IMAGE]:-}
+  4) MinIO user                ${CFG[MINIO_ROOT_USER]:-}
+  5) MinIO password
+  6) Published port            ${CFG[HOST_PORT]:-8088}
+  7) Image                     ${CFG[SERVICE_IMAGE]:-}
   s) Save
-  t) Test connections (stack must already be up)
+  m) Install MinIO if it is not already running
+  w) Check the web console (page up + login)
   q) Quit
 EOF
   read -r -p "> " choice
@@ -152,16 +157,13 @@ EOF
     1) prompt_value NILO_CONSOLE_USERNAME "Console username" ;;
     2) prompt_value NILO_CONSOLE_PASSWORD "Console password" secret ;;
     3) prompt_value NILO_INGEST_API_KEY "Ingest API key" secret ;;
-    4) prompt_value MONGO_USER "MongoDB user" ;;
-    5) prompt_value MONGO_PASSWORD "MongoDB password" secret ;;
-    6) prompt_value MINIO_ROOT_USER "MinIO user" ;;
-    7) prompt_value MINIO_ROOT_PASSWORD "MinIO password" secret ;;
-    8) prompt_value HOST_PORT "Host port for the console and the API" ;;
-    9) prompt_value SERVICE_IMAGE "Image" ;;
+    4) prompt_value MINIO_ROOT_USER "MinIO user" ;;
+    5) prompt_value MINIO_ROOT_PASSWORD "MinIO password" secret ;;
+    6) prompt_value HOST_PORT "Host port for the console and the API" ;;
+    7) prompt_value SERVICE_IMAGE "Image" ;;
     s)
       if ! require_secret NILO_CONSOLE_PASSWORD \
         || ! require_secret NILO_INGEST_API_KEY \
-        || ! require_secret MONGO_PASSWORD \
         || ! require_secret MINIO_ROOT_PASSWORD; then
         continue
       fi
@@ -170,8 +172,21 @@ EOF
         continue
       fi
       save
+      if curl -fsS --max-time 3 http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+        echo "MinIO is already running."
+      else
+        echo "MinIO is not running. Installing it..."
+        ./deploy.sh --ensure-minio
+      fi
       ;;
-    t) test_connections || true ;;
+    m)
+      if ! require_secret MINIO_ROOT_PASSWORD; then
+        continue
+      fi
+      save
+      ./deploy.sh --ensure-minio || true
+      ;;
+    w) check_web || true ;;
     q) exit 0 ;;
     *) echo "Unknown option." ;;
   esac
