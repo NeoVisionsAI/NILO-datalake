@@ -190,9 +190,9 @@ compose up -d --pull always --force-recreate --remove-orphans datalake 2>/dev/nu
 echo "Waiting for the console and the archive API on port ${port}..."
 ok=0
 for _ in $(seq 1 40); do
-  if curl -fsS --max-time 3 "http://127.0.0.1:${port}/v1/health" >/dev/null \
-    && curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${port}/console" \
-    && curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${port}/console/static/app.js"; then
+  if curl -fsS --max-time 3 "http://127.0.0.1:${port}/v1/health" >/dev/null 2>/dev/null \
+    && curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${port}/console" 2>/dev/null \
+    && curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${port}/console/static/app.js" 2>/dev/null; then
     ok=1
     break
   fi
@@ -207,12 +207,26 @@ if [[ "$ok" != 1 ]]; then
 fi
 
 console_build="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/console/api/version" 2>/dev/null | sed -n 's/.*"build"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)"
-if curl -fsS --max-time 5 "http://127.0.0.1:${port}/console/static/app.js" 2>/dev/null | grep -q '"overview"'; then
-  echo "Console UI: current (Overview dashboard)."
-elif [[ -n "$console_build" && "$console_build" != "unknown" ]]; then
-  echo "Console build ${console_build} — if the page looks old, hard-refresh the browser (Ctrl+Shift+R)." >&2
+js_sample="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/console/static/app.js" 2>/dev/null || true)"
+image_id="$(compose images -q datalake 2>/dev/null | head -n 1 || true)"
+if [[ -n "$image_id" ]]; then
+  echo "Datalake container image: ${image_id}"
+fi
+if [[ -n "$console_build" && "$console_build" != "unknown" ]]; then
+  echo "Console build (git): ${console_build:0:12}"
+fi
+if grep -q 'toast-host' <<<"$js_sample"; then
+  echo "Console UI: latest (toasts, loader, Archive API Try it)."
+elif grep -q '"overview"' <<<"$js_sample"; then
+  echo "Console UI: older build (Overview only — no toasts yet)." >&2
+  echo "  Run: docker compose --env-file credentials.env pull datalake" >&2
+  echo "  Then: docker compose --env-file credentials.env up -d --force-recreate datalake" >&2
 else
-  echo "Console static files look outdated. Run ./deploy.sh again or hard-refresh (Ctrl+Shift+R)." >&2
+  echo "Console static files could not be verified." >&2
+fi
+page_sample="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/console" 2>/dev/null || true)"
+if [[ -n "$page_sample" ]] && ! grep -q 'app.js?v=' <<<"$page_sample"; then
+  echo "Note: /console HTML has no cache-bust query on app.js — open a private window or check the image build date." >&2
 fi
 
 echo
