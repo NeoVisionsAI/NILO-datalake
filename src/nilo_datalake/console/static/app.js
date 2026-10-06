@@ -19,22 +19,77 @@ let storageBrowse = { open: false, path: "/", volume: null };
 let pathChecks = {};
 let openApiDoc = null;
 let openApiLoading = false;
+let loadingCount = 0;
 
+const ARCHIVE_TRY = {
+  "get /v1/health": "health",
+  "get /v1/status": "status",
+  "post /v1/batches": "open_batch",
+};
+
+ensureChrome();
 boot();
 
+function ensureChrome() {
+  if (!document.getElementById("top-loader")) {
+    const bar = el("div", { className: "top-loader", id: "top-loader" });
+    bar.append(el("div", { className: "top-loader-bar" }));
+    document.body.prepend(bar);
+  }
+  if (!document.getElementById("toast-host")) {
+    document.body.append(el("div", { className: "toast-host", id: "toast-host" }));
+  }
+}
+
+function beginLoading() {
+  loadingCount += 1;
+  document.getElementById("top-loader")?.classList.add("active");
+}
+
+function endLoading() {
+  loadingCount = Math.max(0, loadingCount - 1);
+  if (loadingCount === 0) {
+    document.getElementById("top-loader")?.classList.remove("active");
+  }
+}
+
+async function withLoading(fn) {
+  beginLoading();
+  try {
+    return await fn();
+  } finally {
+    endLoading();
+  }
+}
+
+function toast(kind, text) {
+  ensureChrome();
+  const host = document.getElementById("toast-host");
+  const node = el("div", { className: `toast toast-${kind}` });
+  node.textContent = text;
+  host.append(node);
+  requestAnimationFrame(() => node.classList.add("show"));
+  setTimeout(() => {
+    node.classList.remove("show");
+    setTimeout(() => node.remove(), 280);
+  }, 5000);
+}
+
 async function boot() {
-  const response = await fetch("/console/api/settings");
-  if (response.status === 401) {
-    renderLogin();
-    return;
-  }
-  if (!response.ok) {
-    renderLogin(await errorText(response));
-    return;
-  }
-  state = await response.json();
-  await refreshDashboard();
-  renderApp();
+  await withLoading(async () => {
+    const response = await fetch("/console/api/settings");
+    if (response.status === 401) {
+      renderLogin();
+      return;
+    }
+    if (!response.ok) {
+      renderLogin(await errorText(response));
+      return;
+    }
+    state = await response.json();
+    await refreshDashboard();
+    renderApp();
+  });
 }
 
 async function refreshDashboard() {
@@ -72,18 +127,23 @@ function renderLogin(error) {
   card.addEventListener("submit", async (event) => {
     event.preventDefault();
     button.disabled = true;
-    const response = await fetch("/console/api/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: user.value, password: password.value }),
+    await withLoading(async () => {
+      const response = await fetch("/console/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: user.value, password: password.value }),
+      });
+      if (!response.ok) {
+        const err = await errorText(response);
+        toast("error", err);
+        renderLogin(err);
+        return;
+      }
+      toast("ok", "Signed in.");
+      section = "overview";
+      await boot();
     });
     button.disabled = false;
-    if (!response.ok) {
-      renderLogin(await errorText(response));
-      return;
-    }
-    section = "overview";
-    boot();
   });
   wrap.append(card);
   app.append(wrap);
@@ -130,7 +190,6 @@ function renderApp() {
   );
   top.append(actions);
   main.append(top);
-  if (message) main.append(el("p", { className: message.kind, textContent: message.text }));
   const panel = el("section", { className: "panel" });
   panel.append(renderSection());
   main.append(panel);
@@ -178,7 +237,17 @@ function renderSection() {
     );
   }
   if (section === "storage") {
-    root.append(el("p", { className: "hint", textContent: "The first enabled disk is filled first. Sizes are in GiB. Check that each path exists before saving." }));
+    root.append(el("p", { className: "hint", textContent: "The first enabled disk is filled first. Check that each path exists before saving." }));
+    root.append(el("div", { className: "storage-hint-box" }, [
+      el("strong", { textContent: "Reserve and min free" }),
+      el("p", {
+        className: "hint",
+        textContent:
+          "Reserve is space never used for archives (headroom for the OS and Docker). "
+          + "0.0625 GiB = 64 MiB is the small Docker default; on a hospital disk set Reserve to tens of GiB. "
+          + "Min free blocks new batches when the volume has less than that much free space.",
+      }),
+    ]));
     for (const volume of settings.storage.volumes) {
       const row = el("div", { className: "list-row storage-vol" });
       const pathInput = text(volume.root, (value) => {
@@ -207,8 +276,8 @@ function renderSection() {
       renderApp();
     }));
     root.append(
-      field("Reserve (GiB)", text(toGiB(settings.storage.reserve_bytes), (value) => { settings.storage.reserve_bytes = fromGiB(value); })),
-      field("Minimum free space to open a batch (GiB)", text(toGiB(settings.storage.min_free_bytes), (value) => { settings.storage.min_free_bytes = fromGiB(value); })),
+      field(`Reserve (${formatSizeHint(settings.storage.reserve_bytes)})`, text(toGiB(settings.storage.reserve_bytes), (value) => { settings.storage.reserve_bytes = fromGiB(value); renderApp(); })),
+      field(`Min free to open a batch (${formatSizeHint(settings.storage.min_free_bytes)})`, text(toGiB(settings.storage.min_free_bytes), (value) => { settings.storage.min_free_bytes = fromGiB(value); renderApp(); })),
       field("Catalog path", text(settings.storage.catalog_path, (value) => { settings.storage.catalog_path = value; })),
     );
   }
@@ -307,8 +376,11 @@ function renderOverview() {
   }
   wrap.append(syncLine);
   wrap.append(button("Refresh summary", "ghost", async () => {
-    await refreshDashboard();
-    renderApp();
+    await withLoading(async () => {
+      await refreshDashboard();
+      toast("ok", "Summary refreshed.");
+      renderApp();
+    });
   }));
   return wrap;
 }
@@ -407,23 +479,40 @@ function renderApiDoc() {
   const wrap = el("div", { className: "api-doc" });
   wrap.append(
     el("p", { className: "lede", textContent: "OpenAPI description of the archive ingest API (same routes a Swagger UI would list)." }),
-    button("Load / refresh API spec", "ghost", loadOpenApiDoc),
+    el("div", { className: "row" }, [
+      button("Load / refresh spec", "ghost", loadOpenApiDoc),
+      button("Try health", "primary", () => tryArchiveAction("health")),
+      button("Try status", "primary", () => tryArchiveAction("status")),
+      button("Try open batch", "primary", () => tryArchiveAction("open_batch")),
+    ]),
   );
   if (!openApiDoc) {
     wrap.append(el("p", { className: "hint", textContent: openApiLoading ? "Loading OpenAPI spec…" : "Waiting for spec…" }));
     return wrap;
   }
+  wrap.append(
+    el("p", { className: "hint", textContent: "Use Try it to call the live ingest API on this server (like Swagger Try it out)." }),
+  );
   const paths = openApiDoc.paths || {};
   for (const [path, methods] of Object.entries(paths)) {
     for (const [method, detail] of Object.entries(methods)) {
       if (method === "parameters") continue;
       const block = el("div", { className: "api-endpoint" });
-      block.append(
+      const key = `${method.toLowerCase()} ${path}`;
+      const tryAction = ARCHIVE_TRY[key];
+      const head = el("div", { className: "api-endpoint-head" });
+      head.append(
         el("h3", {}, [
           el("span", { className: "api-method", textContent: method.toUpperCase() }),
           document.createTextNode(" " + path),
         ]),
       );
+      if (tryAction) {
+        head.append(button("Try it", "primary", () => tryArchiveAction(tryAction)));
+      } else {
+        head.append(el("span", { className: "hint", textContent: "Try via client with ingest API key" }));
+      }
+      block.append(head);
       if (detail.summary) block.append(el("p", { textContent: detail.summary }));
       if (detail.description) block.append(el("p", { textContent: detail.description }));
       if (detail.requestBody) block.append(el("p", { textContent: "Request body: JSON (see schema in OpenAPI)." }));
@@ -434,15 +523,30 @@ function renderApiDoc() {
 }
 
 async function loadOpenApiDoc() {
-  const response = await fetch("/console/api/openapi");
-  if (response.status === 401) return renderLogin();
-  if (!response.ok) {
-    message = { kind: "error", text: await errorText(response) };
+  await withLoading(async () => {
+    const response = await fetch("/console/api/openapi");
+    if (response.status === 401) return renderLogin();
+    if (!response.ok) {
+      toast("error", await errorText(response));
+      return;
+    }
+    openApiDoc = await response.json();
+    toast("ok", "API spec loaded.");
     renderApp();
-    return;
-  }
-  openApiDoc = await response.json();
-  renderApp();
+  });
+}
+
+async function tryArchiveAction(action) {
+  await withLoading(async () => {
+    const response = await fetch("/console/api/archive/try/" + action, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload()),
+    });
+    if (response.status === 401) return renderLogin();
+    const body = await response.json();
+    toast(body.ok ? "ok" : "error", body.detail || "Request failed");
+  });
 }
 
 function pathStatusClass(volumeId) {
@@ -458,12 +562,15 @@ function pathStatusText(volumeId) {
 }
 
 async function checkVolumePath(volume) {
-  const path = volume.root || "/";
-  const response = await fetch("/console/api/storage/check?path=" + encodeURIComponent(path));
-  if (response.status === 401) return renderLogin();
-  const body = await response.json();
-  pathChecks[volume.id] = body;
-  renderApp();
+  await withLoading(async () => {
+    const path = volume.root || "/";
+    const response = await fetch("/console/api/storage/check?path=" + encodeURIComponent(path));
+    if (response.status === 401) return renderLogin();
+    const body = await response.json();
+    pathChecks[volume.id] = body;
+    toast(body.ok ? "ok" : "error", body.ok ? `Path exists: ${body.path}` : (body.detail || "Path not usable"));
+    renderApp();
+  });
 }
 
 function openStorageBrowse(volume) {
@@ -474,19 +581,20 @@ function openStorageBrowse(volume) {
 }
 
 async function loadBrowse(path) {
-  const response = await fetch("/console/api/storage/browse?path=" + encodeURIComponent(path || "/"));
-  if (response.status === 401) return renderLogin();
-  if (!response.ok) {
-    message = { kind: "error", text: await errorText(response) };
+  await withLoading(async () => {
+    const response = await fetch("/console/api/storage/browse?path=" + encodeURIComponent(path || "/"));
+    if (response.status === 401) return renderLogin();
+    if (!response.ok) {
+      toast("error", await errorText(response));
+      return;
+    }
+    const body = await response.json();
+    storageBrowse.path = body.path;
+    storageBrowse.entries = body.directories;
+    storageBrowse.parent = body.parent;
+    storageBrowse.roots = body.roots;
     renderApp();
-    return;
-  }
-  const body = await response.json();
-  storageBrowse.path = body.path;
-  storageBrowse.entries = body.directories;
-  storageBrowse.parent = body.parent;
-  storageBrowse.roots = body.roots;
-  renderApp();
+  });
 }
 
 function renderFolderBrowser() {
@@ -548,70 +656,76 @@ function renderConnectionTest(kind, label, description) {
 }
 
 async function save() {
-  const response = await fetch("/console/api/settings", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload()),
-  });
-  if (response.status === 401) return renderLogin();
-  if (!response.ok) {
-    message = { kind: "error", text: await errorText(response) };
+  await withLoading(async () => {
+    const response = await fetch("/console/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload()),
+    });
+    if (response.status === 401) return renderLogin();
+    if (!response.ok) {
+      toast("error", await errorText(response));
+      return;
+    }
+    const body = await response.json();
+    state = body;
+    toast(
+      body.restart_required ? "warn" : "ok",
+      body.restart_required
+        ? "Saved. Restart the service to bind the new host or port."
+        : "Saved. Schedule and credentials are in use.",
+    );
+    await refreshDashboard();
     renderApp();
-    return;
-  }
-  const body = await response.json();
-  state = body;
-  message = {
-    kind: body.restart_required ? "warn" : "ok",
-    text: body.restart_required
-      ? "Saved. Restart the service to bind the new host or port."
-      : "Saved. The schedule and credentials are already in use.",
-  };
-  await refreshDashboard();
-  renderApp();
+  });
 }
 
 async function runSync() {
-  const response = await fetch("/console/api/sync", { method: "POST" });
-  if (response.status === 401) return renderLogin();
-  const body = await response.json();
-  message = body.started
-    ? { kind: "ok", text: "Sync started. It keeps running after you leave this page." }
-    : { kind: "warn", text: body.reason || "Sync did not start" };
-  renderApp();
+  await withLoading(async () => {
+    const response = await fetch("/console/api/sync", { method: "POST" });
+    if (response.status === 401) return renderLogin();
+    const body = await response.json();
+    toast(body.started ? "ok" : "warn", body.started ? "Sync started." : (body.reason || "Sync did not start"));
+    renderApp();
+  });
 }
 
 async function testKind(kind) {
-  const response = await fetch("/console/api/test/" + kind, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload()),
+  await withLoading(async () => {
+    const response = await fetch("/console/api/test/" + kind, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload()),
+    });
+    if (response.status === 401) return renderLogin();
+    const body = await response.json();
+    connectionTests[kind] = { ok: body.ok, text: body.detail || body.error || "Test failed" };
+    toast(body.ok ? "ok" : "error", connectionTests[kind].text);
+    renderApp();
   });
-  if (response.status === 401) return renderLogin();
-  const body = await response.json();
-  connectionTests[kind] = { ok: body.ok, text: body.detail || body.error || "Test failed" };
-  renderApp();
 }
 
 async function restart() {
-  message = { kind: "warn", text: "Restarting. This page will reconnect in a few seconds." };
+  toast("warn", "Restarting service…");
   renderApp();
-  await fetch("/console/api/restart", { method: "POST" });
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    await sleep(1000);
-    try {
-      const health = await fetch("/v1/health");
-      if (health.ok) {
-        message = { kind: "ok", text: "The service is back." };
-        boot();
-        return;
+  await withLoading(async () => {
+    await fetch("/console/api/restart", { method: "POST" });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(1000);
+      try {
+        const health = await fetch("/v1/health");
+        if (health.ok) {
+          toast("ok", "Service is back.");
+          await boot();
+          return;
+        }
+      } catch (_error) {
+        // The process is still down.
       }
-    } catch (_error) {
-      // The process is still down.
     }
-  }
-  message = { kind: "error", text: "The service did not come back. Check the container logs." };
-  renderApp();
+    toast("error", "Service did not come back. Check container logs.");
+    renderApp();
+  });
 }
 
 async function logout() {
@@ -704,6 +818,13 @@ function fromGiB(text) {
   const value = Number(text);
   if (!Number.isFinite(value) || value < 0) return 0;
   return Math.round(value * 1073741824);
+}
+
+function formatSizeHint(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "GiB";
+  if (n < 1073741824) return `${Math.round(n / 1048576)} MiB`;
+  return `${(n / 1073741824).toFixed(2)} GiB`;
 }
 
 function formatBytes(bytes) {

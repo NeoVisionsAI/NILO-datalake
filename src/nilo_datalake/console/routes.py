@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from nilo_datalake.config import Settings, save_settings
 from nilo_datalake.console.store import apply_form, view_settings
+from nilo_datalake.console.archive_probe import try_archive_action
 from nilo_datalake.console.probes import probe_direct, probe_http_pull, probe_ingest
 from nilo_datalake.console.storage_browser import check_storage_path, list_storage_directories
 from nilo_datalake.console.summary import build_dashboard
@@ -156,6 +157,22 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
             path="/",
         )
         return result
+
+    @router.post("/api/archive/try/{action}")
+    def archive_try(action: str, payload: dict, request: Request) -> dict:
+        current = _require(request)
+        try:
+            candidate = apply_form(current, payload)
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            ok, detail = try_archive_action(action, candidate, app=request.app)
+        except ConfigError as exc:
+            return {"ok": False, "detail": str(exc)}
+        except Exception as exc:
+            log.exception("archive try failed action=%s", action)
+            return {"ok": False, "detail": str(exc)}
+        return {"ok": ok, "detail": detail}
 
     @router.post("/api/test/{kind}")
     def test_connection(kind: str, payload: dict, request: Request) -> dict:

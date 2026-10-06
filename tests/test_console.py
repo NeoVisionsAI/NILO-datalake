@@ -93,6 +93,10 @@ def test_login_and_settings_round_trip(ctx, tmp_path) -> None:
         assert browse.status_code == 200
         assert browse.json()["path"] == str(Path(vol_root).resolve())
 
+        health_try = client.post("/console/api/archive/try/health", json=_payload(body))
+        assert health_try.status_code == 200
+        assert health_try.json()["ok"] is True
+
 
 def test_file_only_ignores_environment(tmp_path, monkeypatch) -> None:
     path = tmp_path / "settings.yaml"
