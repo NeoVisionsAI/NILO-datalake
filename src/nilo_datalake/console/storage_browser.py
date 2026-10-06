@@ -58,13 +58,20 @@ def check_storage_path(settings: Settings, raw: str) -> dict:
     exists = path.exists()
     is_dir = path.is_dir() if exists else False
     writable = os.access(path, os.W_OK) if is_dir else False
+    detail = "ready" if exists and is_dir else ("not found" if not exists else "not a directory")
     return {
         "ok": exists and is_dir,
         "path": str(path),
         "exists": exists,
         "is_dir": is_dir,
         "writable": writable,
-        "detail": "ready" if exists and is_dir else ("not found" if not exists else "not a directory"),
+        "detail": detail,
+        "scope": "datalake_container",
+        "note": (
+            "Checked inside the running datalake container. "
+            "/data is usually a Docker volume, not a folder on the NAS host — "
+            "ls /data over SSH on the NAS may fail even when this check passes."
+        ),
     }
 
 

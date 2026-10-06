@@ -162,7 +162,7 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
     def archive_try(action: str, payload: dict, request: Request) -> dict:
         current = _require(request)
         try:
-            candidate = apply_form(current, payload)
+            candidate = _candidate_with_test_ingest_key(current, payload)
         except ConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
@@ -178,7 +178,7 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
     def test_connection(kind: str, payload: dict, request: Request) -> dict:
         current = _require(request)
         try:
-            candidate = apply_form(current, payload)
+            candidate = _candidate_with_test_ingest_key(current, payload)
         except ConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
@@ -227,6 +227,16 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
     @app.get("/")
     def root() -> RedirectResponse:
         return RedirectResponse("/console")
+
+
+def _candidate_with_test_ingest_key(current: Settings, payload: dict) -> Settings:
+    candidate = apply_form(current, payload)
+    test_key = payload.get("test_ingest_api_key")
+    if isinstance(test_key, str) and test_key.strip():
+        candidate = candidate.model_copy(
+            update={"ingest": candidate.ingest.model_copy(update={"api_key": test_key.strip()})}
+        )
+    return candidate
 
 
 def reload_runtime(app: FastAPI, settings: Settings) -> bool:

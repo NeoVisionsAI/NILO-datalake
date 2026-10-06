@@ -6,7 +6,7 @@ const sections = [
   ["storage", "Storage"],
   ["minio", "MinIO"],
   ["ingress", "Data ingress"],
-  ["api", "Archive API"],
+  ["api", "Test API"],
   ["account", "Account"],
 ];
 
@@ -20,6 +20,8 @@ let pathChecks = {};
 let openApiDoc = null;
 let openApiLoading = false;
 let loadingCount = 0;
+let testIngestKey = "";
+let testApiPanel = { open: false, ok: null, text: "" };
 
 const ARCHIVE_TRY = {
   "get /v1/health": "health",
@@ -213,31 +215,42 @@ function renderSection() {
   }
   if (section === "schedule") {
     const cron = text(settings.pull.schedule, (value) => { settings.pull.schedule = value; });
-    const cronHelp = el("p", { className: "hint" });
+    const cronHelp = el("p", { className: "hint compact-grid-wide" });
     cronHelp.append(
       "Build or check cron expressions at ",
       el("a", { className: "ext-link", href: "https://crontab.guru/", target: "_blank", rel: "noopener", textContent: "crontab.guru" }),
       ".",
     );
+    const sched = el("div", { className: "compact-grid" });
+    sched.append(
+      el("div", { className: "compact-grid-wide" }, check("Pull from MinIO and other backends on a schedule", settings.pull.enabled, (value) => { settings.pull.enabled = value; })),
+      compactField("Cron", cron),
+      compactField("Timezone", text(settings.pull.timezone, (value) => { settings.pull.timezone = value; })),
+      compactField("Safety delay (s)", number(settings.pull.safety_delay_seconds, (value) => { settings.pull.safety_delay_seconds = value; })),
+      el("div", { className: "compact-grid-wide" }, check("Watch the rsync/scp inbox", settings.inbox.enabled, (value) => { settings.inbox.enabled = value; })),
+      compactField("Inbox poll (s)", number(settings.inbox.poll_seconds, (value) => { settings.inbox.poll_seconds = value; })),
+      compactField("Abandon after (h)", number(settings.inbox.abandon_after_hours, (value) => { settings.inbox.abandon_after_hours = value; })),
+    );
     root.append(
-      check("Pull from MinIO and other backends on a schedule", settings.pull.enabled, (value) => { settings.pull.enabled = value; }),
-      field("Cron (minute hour day month weekday)", cron),
+      sched,
       cronHelp,
       el("div", { className: "row" }, [
         button("Daily at 02:00", "ghost", () => { settings.pull.schedule = "0 2 * * *"; renderApp(); }),
         button("Hourly", "ghost", () => { settings.pull.schedule = "0 * * * *"; renderApp(); }),
         button("Every 15 minutes", "ghost", () => { settings.pull.schedule = "*/15 * * * *"; renderApp(); }),
       ]),
-      field("Timezone", text(settings.pull.timezone, (value) => { settings.pull.timezone = value; })),
-      field("Safety delay (seconds)", number(settings.pull.safety_delay_seconds, (value) => { settings.pull.safety_delay_seconds = value; })),
-      check("Watch the rsync/scp inbox", settings.inbox.enabled, (value) => { settings.inbox.enabled = value; }),
-      field("Inbox poll (seconds)", number(settings.inbox.poll_seconds, (value) => { settings.inbox.poll_seconds = value; })),
-      field("Abandon unfinished uploads after (hours)", number(settings.inbox.abandon_after_hours, (value) => { settings.inbox.abandon_after_hours = value; })),
       button("Run sync now", "ghost", runSync),
     );
   }
   if (section === "storage") {
-    root.append(el("p", { className: "hint", textContent: "The first enabled disk is filled first. Check that each path exists before saving." }));
+    root.append(
+      el("p", { className: "hint", textContent: "The first enabled disk is filled first. Check that each path exists before saving." }),
+      el("p", {
+        className: "hint",
+        textContent:
+          "Path checks run inside the datalake container. /data is often a Docker volume (not /data on the NAS host over SSH). Use a host bind mount in compose if you need a specific NAS folder.",
+      }),
+    );
     root.append(el("div", { className: "storage-hint-box" }, [
       el("strong", { textContent: "Reserve and min free" }),
       el("p", {
@@ -267,6 +280,10 @@ function renderSection() {
         }),
       );
       root.append(row);
+      const scopeNote = pathChecks[volume.id]?.note;
+      if (scopeNote) {
+        root.append(el("p", { className: "hint", style: "margin:-6px 0 12px 0", textContent: scopeNote }));
+      }
     }
     if (storageBrowse.open) {
       root.append(renderFolderBrowser());
@@ -275,23 +292,29 @@ function renderSection() {
       settings.storage.volumes.push({ id: "disk" + (settings.storage.volumes.length + 1), root: "", enabled: false });
       renderApp();
     }));
-    root.append(
-      field(`Reserve (${formatSizeHint(settings.storage.reserve_bytes)})`, text(toGiB(settings.storage.reserve_bytes), (value) => { settings.storage.reserve_bytes = fromGiB(value); renderApp(); })),
-      field(`Min free to open a batch (${formatSizeHint(settings.storage.min_free_bytes)})`, text(toGiB(settings.storage.min_free_bytes), (value) => { settings.storage.min_free_bytes = fromGiB(value); renderApp(); })),
-      field("Catalog path", text(settings.storage.catalog_path, (value) => { settings.storage.catalog_path = value; })),
+    const storGrid = el("div", { className: "compact-grid" });
+    storGrid.append(
+      compactField(`Reserve GiB (${formatSizeHint(settings.storage.reserve_bytes)})`, text(toGiB(settings.storage.reserve_bytes), (value) => { settings.storage.reserve_bytes = fromGiB(value); renderApp(); })),
+      compactField(`Min free GiB (${formatSizeHint(settings.storage.min_free_bytes)})`, text(toGiB(settings.storage.min_free_bytes), (value) => { settings.storage.min_free_bytes = fromGiB(value); renderApp(); })),
+      el("div", { className: "compact-grid-wide" }, field("Catalog path", text(settings.storage.catalog_path, (value) => { settings.storage.catalog_path = value; }))),
     );
+    root.append(storGrid);
   }
   if (section === "minio") {
     const minio = settings.pull.minio;
     root.append(
       el("p", { className: "lede", textContent: "Session videos and MongoDB dump files are copied from MinIO buckets into local archive disks. This service does not connect to MongoDB directly." }),
-      check("Pull from MinIO", minio.enabled, (value) => { minio.enabled = value; }),
-      field("Endpoint (host:port)", text(minio.endpoint, (value) => { minio.endpoint = value; })),
-      field("Access key", text(minio.access_key, (value) => { minio.access_key = value; })),
-      secretField("Secret key", minio.secret_key, state.secrets_set.includes("pull.minio.secret_key"), (value) => { minio.secret_key = value; }),
-      check("TLS", minio.secure, (value) => { minio.secure = value; }),
-      field("Session prefix", text(minio.session_prefix, (value) => { minio.session_prefix = value; })),
+      el("div", { className: "compact-grid-wide" }, check("Pull from MinIO", minio.enabled, (value) => { minio.enabled = value; })),
     );
+    const minioGrid = el("div", { className: "compact-grid" });
+    minioGrid.append(
+      compactField("Endpoint", text(minio.endpoint, (value) => { minio.endpoint = value; })),
+      compactField("Access key", text(minio.access_key, (value) => { minio.access_key = value; })),
+      el("div", { className: "compact-grid-wide" }, secretField("Secret key", minio.secret_key, state.secrets_set.includes("pull.minio.secret_key"), (value) => { minio.secret_key = value; })),
+      el("div", { className: "compact-grid-wide" }, check("TLS", minio.secure, (value) => { minio.secure = value; })),
+      compactField("Session prefix", text(minio.session_prefix, (value) => { minio.session_prefix = value; })),
+    );
+    root.append(minioGrid);
     root.append(renderConnectionTest("minio", "Test MinIO connection", "Checks endpoint, credentials, and lists buckets."));
     for (const bucket of minio.buckets) {
       const row = el("div", { className: "list-row bucket" });
@@ -338,20 +361,7 @@ function renderOverview() {
   const grid = el("div", { className: "stats-grid" });
   const disk = dashboard.disks[0];
   if (disk && !disk.error) {
-    const usedPct = disk.total_bytes ? Math.min(100, Math.round((disk.used_bytes / disk.total_bytes) * 100)) : 0;
-    const card = el("div", { className: "stat-card" });
-    card.append(
-      el("h2", { textContent: "Archive disk" }),
-      el("p", { className: "stat-value", textContent: `${usedPct}% used` }),
-      el("p", {
-        className: "stat-detail",
-        textContent: `${formatBytes(disk.used_bytes)} of ${formatBytes(disk.total_bytes)} · ${disk.free_bytes !== undefined ? formatBytes(disk.free_bytes) + " free" : ""} (${disk.id})`,
-      }),
-    );
-    const bar = el("div", { className: "stat-bar" });
-    bar.append(el("div", { className: "stat-bar-fill", style: `width:${usedPct}%` }));
-    card.append(bar);
-    grid.append(card);
+    grid.append(renderDiskGauge(disk));
   } else if (disk && disk.error) {
     grid.append(statCard("Archive disk", "Unavailable", disk.error));
   }
@@ -383,6 +393,28 @@ function renderOverview() {
     });
   }));
   return wrap;
+}
+
+function renderDiskGauge(disk) {
+  const usedPct = disk.total_bytes ? Math.min(100, Math.round((disk.used_bytes / disk.total_bytes) * 100)) : 0;
+  const card = el("div", { className: "stat-card gauge-card" });
+  const ring = el("div", { className: "gauge-ring", style: `--pct:${usedPct}` });
+  const inner = el("div", { className: "gauge-inner" });
+  inner.append(
+    el("div", { className: "gauge-pct", textContent: `${usedPct}%` }),
+    el("div", { className: "gauge-label", textContent: "used" }),
+  );
+  ring.append(inner);
+  const meta = el("div", { className: "gauge-meta" });
+  meta.append(
+    el("h2", { textContent: "Archive disk" }),
+    el("p", {
+      className: "stat-detail",
+      textContent: `${formatBytes(disk.used_bytes)} of ${formatBytes(disk.total_bytes)} · ${disk.free_bytes !== undefined ? formatBytes(disk.free_bytes) + " free" : ""} (${disk.id})`,
+    }),
+  );
+  card.append(ring, meta);
+  return card;
 }
 
 function statCard(title, value, detail) {
@@ -425,8 +457,10 @@ function renderIngress() {
     check("Enabled", http.enabled, (value) => { http.enabled = value; }),
     field("Remote base URL", text(http.base_url, (value) => { http.base_url = value; })),
     secretField("Remote API key", http.api_key, state.secrets_set.includes("pull.http.api_key"), (value) => { http.api_key = value; }),
-    field("Page size", number(http.page_limit, (value) => { http.page_limit = value; })),
-    field("Timeout (seconds)", number(http.timeout_seconds, (value) => { http.timeout_seconds = value; })),
+    el("div", { className: "compact-grid" }, [
+      compactField("Page size", number(http.page_limit, (value) => { http.page_limit = value; })),
+      compactField("Timeout (s)", number(http.timeout_seconds, (value) => { http.timeout_seconds = value; })),
+    ]),
     renderConnectionTest("pull", "Test remote API", "Calls the remote /changes endpoint."),
   );
 
@@ -436,21 +470,43 @@ function renderIngress() {
     el("h2", { textContent: "Push into this datalake" }),
     el("p", { className: "lede", textContent: "Another system uploads batches to the ingest API on this host (Ethernet or routed TCP)." }),
     check("Accept pushes", ingest.enabled, (value) => { ingest.enabled = value; }),
-    field("Bind host", text(ingest.host, (value) => { ingest.host = value; })),
-    field("Port", number(ingest.port, (value) => { ingest.port = value; })),
+    el("div", { className: "compact-grid" }, [
+      compactField("Bind host", text(ingest.host, (value) => { ingest.host = value; })),
+      compactField("Port", number(ingest.port, (value) => { ingest.port = value; })),
+    ]),
     secretField("Ingest API key", ingest.api_key, state.secrets_set.includes("ingest.api_key"), (value) => { ingest.api_key = value; }),
     el("p", { className: "hint", textContent: "Host/port changes need Restart service. See Archive API for the full contract." }),
     renderConnectionTest("ingest", "Test ingest API", "Checks /v1/health and /v1/status on this machine."),
   );
 
   const directCard = el("div", { className: "mode-card" });
+  const guide = el("div", { className: "ingress-guide" });
+  guide.append(
+    el("p", {}, [
+      document.createTextNode("With USB–Ethernet between a MiniPC and this NAS, we recommend "),
+      el("strong", { textContent: "Option B (HTTP push)" }),
+      document.createTextNode(": point the MiniPC at this host’s ingest URL (e.g. http://<NAS-on-link>:8088) and upload batches with the ingest API key. No extra service on the NAS; same contract as a normal network push, only over the direct cable."),
+    ]),
+    el("p", {}, [
+      document.createTextNode("Alternative: copy files with "),
+      el("strong", { textContent: "rsync" }),
+      document.createTextNode(" or "),
+      el("strong", { textContent: "scp" }),
+      document.createTextNode(" into the rsync/scp inbox folders on this machine; the scheduled job imports them. "),
+      el("strong", { textContent: "SSH sources" }),
+      document.createTextNode(" below mean the archive SSHs into the MiniPC and pulls paths with rsync (you need SSH on the MiniPC). FTP is not supported. A private HTTP API on the NAS is unnecessary if you use the built-in ingest API (Option B)."),
+    ]),
+  );
   directCard.append(
     el("span", { className: "tag", textContent: "Option C" }),
     el("h2", { textContent: "Direct link (MiniPC / cable)" }),
-    el("p", { className: "lede", textContent: "rsync/scp drops and SSH/rsync pulls from a linked NILO node. SSH pull stays enabled." }),
+    el("p", { className: "lede", textContent: "Same ingest paths as B, plus file drops and optional rsync-over-SSH pulls from the linked node." }),
+    guide,
     check("Watch rsync/scp inbox folders", settings.inbox.enabled, (value) => { settings.inbox.enabled = value; }),
-    field("rsync binary", text(ssh.binary, (value) => { ssh.binary = value; })),
-    field("SSH command", text(ssh.ssh_command, (value) => { ssh.ssh_command = value; })),
+    el("div", { className: "compact-grid" }, [
+      compactField("rsync binary", text(ssh.binary, (value) => { ssh.binary = value; })),
+      compactField("SSH command", text(ssh.ssh_command, (value) => { ssh.ssh_command = value; })),
+    ]),
     renderConnectionTest("direct", "Test direct paths", "Lists active network links, inbox folders, and rsync sources."),
   );
   for (const source of ssh.sources) {
@@ -478,20 +534,22 @@ function renderIngress() {
 function renderApiDoc() {
   const wrap = el("div", { className: "api-doc" });
   wrap.append(
-    el("p", { className: "lede", textContent: "OpenAPI description of the archive ingest API (same routes a Swagger UI would list)." }),
+    el("p", { className: "lede", textContent: "Try the ingest API on this server. OpenAPI lists the same routes as Swagger." }),
+    renderTestIngestKeyField(),
     el("div", { className: "row" }, [
       button("Load / refresh spec", "ghost", loadOpenApiDoc),
       button("Try health", "primary", () => tryArchiveAction("health")),
       button("Try status", "primary", () => tryArchiveAction("status")),
       button("Try open batch", "primary", () => tryArchiveAction("open_batch")),
     ]),
+    renderTestApiPanel(),
   );
   if (!openApiDoc) {
     wrap.append(el("p", { className: "hint", textContent: openApiLoading ? "Loading OpenAPI spec…" : "Waiting for spec…" }));
     return wrap;
   }
   wrap.append(
-    el("p", { className: "hint", textContent: "Use Try it to call the live ingest API on this server (like Swagger Try it out)." }),
+    el("p", { className: "hint", textContent: "Try it sends a request with saved settings; use the key field above to override the ingest API key without saving." }),
   );
   const paths = openApiDoc.paths || {};
   for (const [path, methods] of Object.entries(paths)) {
@@ -545,8 +603,47 @@ async function tryArchiveAction(action) {
     });
     if (response.status === 401) return renderLogin();
     const body = await response.json();
-    toast(body.ok ? "ok" : "error", body.detail || "Request failed");
+    const detail = body.detail;
+    const textOut = detail == null
+      ? JSON.stringify(body, null, 2)
+      : (typeof detail === "string" ? detail : JSON.stringify(detail, null, 2));
+    testApiPanel = { open: true, ok: !!body.ok, text: textOut || "Request finished." };
+    renderApp();
   });
+}
+
+function renderTestIngestKeyField() {
+  const box = el("div", { className: "field field-compact" });
+  box.style.maxWidth = "28rem";
+  const node = el("input", {
+    type: "password",
+    value: testIngestKey,
+    placeholder: "Uses saved key if empty",
+    autocomplete: "off",
+  });
+  node.addEventListener("input", () => { testIngestKey = node.value; });
+  box.append(
+    el("label", { textContent: "Ingest API key (for tests only)" }),
+    node,
+    el("span", { className: "hint", textContent: "Not stored when you Save — only sent with Try it / Try health / status / open batch." }),
+  );
+  return box;
+}
+
+function renderTestApiPanel() {
+  if (!testApiPanel.open) return el("div");
+  const box = el("div", { className: "test-api-output" });
+  const head = el("div", { className: "test-api-output-head" });
+  head.append(
+    el("span", { textContent: testApiPanel.ok ? "Response" : "Error" }),
+    button("Hide", "ghost", () => { testApiPanel.open = false; renderApp(); }),
+  );
+  const body = el("pre", {
+    className: "test-api-output-body " + (testApiPanel.ok ? "ok" : "error"),
+    textContent: testApiPanel.text,
+  });
+  box.append(head, body);
+  return box;
 }
 
 function pathStatusClass(volumeId) {
@@ -558,6 +655,7 @@ function pathStatusClass(volumeId) {
 function pathStatusText(volumeId) {
   const check = pathChecks[volumeId];
   if (!check) return "unchecked";
+  if (check.ok && check.scope === "datalake_container") return "exists (container)";
   return check.detail || (check.ok ? "exists" : "missing");
 }
 
@@ -568,7 +666,6 @@ async function checkVolumePath(volume) {
     if (response.status === 401) return renderLogin();
     const body = await response.json();
     pathChecks[volume.id] = body;
-    toast(body.ok ? "ok" : "error", body.ok ? `Path exists: ${body.path}` : (body.detail || "Path not usable"));
     renderApp();
   });
 }
@@ -739,6 +836,7 @@ async function logout() {
 function payload() {
   const body = { settings: state.settings };
   if (state.mongo_login) body.mongo_login = state.mongo_login;
+  if (testIngestKey.trim()) body.test_ingest_api_key = testIngestKey.trim();
   return body;
 }
 
@@ -751,6 +849,10 @@ function secretField(label, value, stored, setter) {
 
 function field(label, control) {
   return el("div", { className: "field" }, [el("label", { textContent: label }), control]);
+}
+
+function compactField(label, control) {
+  return el("div", { className: "field field-compact" }, [el("label", { textContent: label }), control]);
 }
 
 function labeled(label, control) {
