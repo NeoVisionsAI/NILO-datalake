@@ -15,6 +15,7 @@ from nilo_datalake.sources.http_api import pull_http
 from nilo_datalake.sources.minio_source import pull_minio
 from nilo_datalake.sources.mongo import pull_mongo
 from nilo_datalake.sources.ssh_pull import pull_ssh
+from nilo_datalake.presence import report_presence
 from nilo_datalake.tracing import begin_trace, current_trace_id, end_trace, span
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,16 @@ def start_scheduler(ctx: Context) -> BackgroundScheduler | None:
             "interval",
             seconds=ctx.settings.inbox.poll_seconds,
             id="inbox",
+            max_instances=1,
+            coalesce=True,
+        )
+    presence = ctx.settings.presence
+    if presence.enabled and presence.interval_seconds > 0 and (presence.registry_url or "").strip():
+        scheduler.add_job(
+            lambda: report_presence(ctx.settings),
+            "interval",
+            seconds=presence.interval_seconds,
+            id="presence",
             max_instances=1,
             coalesce=True,
         )

@@ -7,6 +7,7 @@ const sections = [
   ["minio", "MinIO"],
   ["ingress", "Data ingress"],
   ["api", "Test API"],
+  ["presence", "Device registry"],
   ["account", "Account"],
 ];
 
@@ -22,6 +23,7 @@ let openApiLoading = false;
 let loadingCount = 0;
 let testIngestKey = "";
 let testApiPanel = { open: false, ok: null, text: "" };
+let presenceStatus = null;
 
 const ARCHIVE_TRY = {
   "get /v1/health": "health",
@@ -343,6 +345,12 @@ function renderSection() {
     }
     root.append(renderApiDoc());
   }
+  if (section === "presence") {
+    if (!presenceStatus) {
+      refreshPresenceStatus().then(() => renderApp());
+    }
+    root.append(renderPresence());
+  }
   if (section === "account") {
     root.append(
       field("Username", text(settings.console.username, (value) => { settings.console.username = value; })),
@@ -397,24 +405,141 @@ function renderOverview() {
 
 function renderDiskGauge(disk) {
   const usedPct = disk.total_bytes ? Math.min(100, Math.round((disk.used_bytes / disk.total_bytes) * 100)) : 0;
-  const card = el("div", { className: "stat-card gauge-card" });
-  const ring = el("div", { className: "gauge-ring", style: `--pct:${usedPct}` });
-  const inner = el("div", { className: "gauge-inner" });
-  inner.append(
-    el("div", { className: "gauge-pct", textContent: `${usedPct}%` }),
-    el("div", { className: "gauge-label", textContent: "used" }),
+  const card = el("div", { className: "stat-card gauge-card gauge-card-hero" });
+  const visual = el("div", { className: "gauge-visual" });
+  visual.append(buildGaugeSvg(usedPct));
+  const pctOverlay = el("div", { className: "gauge-pct-overlay" });
+  const pctRow = el("div", { className: "gauge-pct-row" });
+  pctRow.append(
+    el("span", { className: "gauge-pct-num", textContent: String(usedPct) }),
+    el("span", { className: "gauge-pct-suffix", textContent: "%" }),
   );
-  ring.append(inner);
+  pctOverlay.append(pctRow, el("span", { className: "gauge-pct-caption", textContent: "used" }));
+  visual.append(pctOverlay);
+
   const meta = el("div", { className: "gauge-meta" });
   meta.append(
     el("h2", { textContent: "Archive disk" }),
-    el("p", {
-      className: "stat-detail",
-      textContent: `${formatBytes(disk.used_bytes)} of ${formatBytes(disk.total_bytes)} · ${disk.free_bytes !== undefined ? formatBytes(disk.free_bytes) + " free" : ""} (${disk.id})`,
-    }),
+    el("p", { className: "gauge-disk-id", textContent: disk.id || "primary" }),
   );
-  card.append(ring, meta);
+  const chips = el("div", { className: "disk-capacity-stats" });
+  chips.append(
+    capacityChip("Used", formatBytes(disk.used_bytes)),
+    capacityChip("Total", formatBytes(disk.total_bytes)),
+    capacityChip("Free", disk.free_bytes !== undefined ? formatBytes(disk.free_bytes) : "—"),
+  );
+  meta.append(chips);
+  card.append(visual, meta);
   return card;
+}
+
+function capacityChip(label, value) {
+  const box = el("div", { className: "capacity-chip" });
+  box.append(el("span", { className: "capacity-chip-label", textContent: label }));
+  box.append(el("span", { className: "capacity-chip-value", textContent: value }));
+  return box;
+}
+
+function buildGaugeSvg(pct) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 160 160");
+  svg.setAttribute("class", "gauge-svg");
+  const track = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  track.setAttribute("cx", "80");
+  track.setAttribute("cy", "80");
+  track.setAttribute("r", "62");
+  track.setAttribute("class", "gauge-track");
+  const arc = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  arc.setAttribute("cx", "80");
+  arc.setAttribute("cy", "80");
+  arc.setAttribute("r", "62");
+  arc.setAttribute("class", "gauge-arc");
+  const circumference = 2 * Math.PI * 62;
+  arc.setAttribute("stroke-dasharray", `${circumference}`);
+  arc.setAttribute("stroke-dashoffset", `${circumference * (1 - pct / 100)}`);
+  svg.append(track, arc);
+  return svg;
+}
+
+function renderPresence() {
+  const settings = state.settings;
+  const presence = settings.presence;
+  const wrap = el("div");
+  wrap.append(
+    el("p", {
+      className: "lede",
+      textContent: "Register this device in your central directory by posting its public IP on a timer (NAS, nilo-node, etc.).",
+    }),
+    check("Send public IP heartbeats", presence.enabled, (value) => { presence.enabled = value; }),
+  );
+  const grid = el("div", { className: "compact-grid" });
+  grid.append(
+    el("div", { className: "compact-grid-wide" }, field("Registry URL (POST)", text(presence.registry_url, (value) => { presence.registry_url = value; }))),
+    compactField("Every (seconds)", number(presence.interval_seconds, (value) => { presence.interval_seconds = value; })),
+    compactField("Device kind", text(presence.device_kind, (value) => { presence.device_kind = value; })),
+    compactField("Timeout (s)", number(presence.timeout_seconds, (value) => { presence.timeout_seconds = value; })),
+    el("div", { className: "compact-grid-wide" }, secretField("Registry API key", presence.api_key, state.secrets_set.includes("presence.api_key"), (value) => { presence.api_key = value; })),
+  );
+  wrap.append(grid);
+  wrap.append(
+    el("p", {
+      className: "hint",
+      textContent: "JSON body: site_id, device_kind, public_ip, hostname, reported_at. Authorization: Bearer <key> when set. Minimum interval 30s after Save.",
+    }),
+    el("div", { className: "row" }, [
+      button("Report now", "primary", tryPresenceReport),
+      button("Refresh status", "ghost", async () => {
+        await refreshPresenceStatus();
+        renderApp();
+      }),
+    ]),
+  );
+  if (presenceStatus?.last) {
+    const last = presenceStatus.last;
+    const box = el("div", { className: "test-api-output" });
+    const head = el("div", { className: "test-api-output-head" });
+    head.append(el("span", { textContent: last.ok ? "Last report" : "Last attempt failed" }));
+    const body = el("pre", {
+      className: "test-api-output-body " + (last.ok ? "ok" : "error"),
+      textContent: formatPresenceLast(last),
+    });
+    box.append(head, body);
+    wrap.append(box);
+  } else if (presenceStatus && !presence.enabled) {
+    wrap.append(el("p", { className: "hint", textContent: "Heartbeats are disabled." }));
+  }
+  return wrap;
+}
+
+function formatPresenceLast(last) {
+  const lines = [];
+  if (last.at) lines.push(`at: ${last.at}`);
+  if (last.public_ip) lines.push(`public_ip: ${last.public_ip}`);
+  if (last.registry_url) lines.push(`url: ${last.registry_url}`);
+  if (last.detail) lines.push(last.detail);
+  return lines.join("\n") || JSON.stringify(last, null, 2);
+}
+
+async function refreshPresenceStatus() {
+  const response = await fetch("/console/api/presence");
+  if (response.status === 401) {
+    renderLogin();
+    return;
+  }
+  if (response.ok) {
+    presenceStatus = await response.json();
+  }
+}
+
+async function tryPresenceReport() {
+  await withLoading(async () => {
+    const response = await fetch("/console/api/presence/try", { method: "POST" });
+    if (response.status === 401) return renderLogin();
+    const body = await response.json();
+    await refreshPresenceStatus();
+    toast(body.ok ? "ok" : "error", body.detail || (body.ok ? "Report sent." : "Report failed"));
+    renderApp();
+  });
 }
 
 function statCard(title, value, detail) {

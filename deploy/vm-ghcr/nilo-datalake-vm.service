@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=@DIR@
 ExecStart=/usr/bin/bash @DIR@/deploy.sh --foreground
 ExecStop=/usr/bin/bash @DIR@/deploy.sh --stop
-Restart=on-failure
+Restart=always
 RestartSec=5
 TimeoutStartSec=0
 

@@ -238,3 +238,11 @@ echo "           nilo-media = sessions, nilo-backups = database dump files"
 echo
 echo "The first start copies credentials.env into the datalake volume."
 echo "Later edits belong in the web console. A new credentials.env is not copied over that file."
+
+if [[ "${NILO_INSTALL_SYSTEMD:-1}" != 0 ]]; then
+  if command -v systemctl >/dev/null 2>&1 && ! systemctl is-enabled nilo-datalake-vm.service >/dev/null 2>&1; then
+    echo
+    echo "Enabling systemd so the stack starts on boot and restarts after failures..."
+    install_systemd || echo "systemd install skipped (run ./deploy.sh --install-systemd manually)." >&2
+  fi
+fi

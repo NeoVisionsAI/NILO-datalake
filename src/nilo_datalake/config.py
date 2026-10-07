@@ -161,6 +161,17 @@ class EdgeConfig(BaseModel):
     timeout_seconds: float = 3600
 
 
+class PresenceConfig(BaseModel):
+    """Periodic public-IP heartbeat to a central registry (device directory)."""
+
+    enabled: bool = False
+    registry_url: str = ""
+    interval_seconds: int = 300
+    device_kind: str = "datalake"
+    api_key: str = ""
+    timeout_seconds: float = 15.0
+
+
 class Settings(BaseSettings):
     site_id: str = "site-local"
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -168,6 +179,7 @@ class Settings(BaseSettings):
     pull: PullConfig = Field(default_factory=PullConfig)
     inbox: InboxConfig = Field(default_factory=InboxConfig)
     edge: EdgeConfig = Field(default_factory=EdgeConfig)
+    presence: PresenceConfig = Field(default_factory=PresenceConfig)
     trace: TraceConfig = Field(default_factory=TraceConfig)
     console: ConsoleConfig = Field(default_factory=ConsoleConfig)
     log_level: str = "INFO"

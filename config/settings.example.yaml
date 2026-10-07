@@ -87,6 +87,14 @@ inbox:
   poll_seconds: 60
   abandon_after_hours: 72
 
+# Optional device directory: POST public IP + site_id to your registry on a timer.
+presence:
+  enabled: false
+  registry_url: https://registry.example.com/api/v1/presence
+  interval_seconds: 300
+  device_kind: datalake
+  api_key: change-me
+
 # Used only by `nilo-datalake edge`. This block is for the MiniPC, not the NAS.
 edge:
   spool_dir: /var/nilo/spool

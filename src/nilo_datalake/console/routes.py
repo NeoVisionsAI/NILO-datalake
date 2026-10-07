@@ -26,6 +26,7 @@ from nilo_datalake.console.summary import build_dashboard
 from nilo_datalake.errors import ConfigError
 from nilo_datalake.passwords import verify_password
 from nilo_datalake.service import build_context
+from nilo_datalake.presence import get_last_report, report_presence
 from nilo_datalake.sync import run_sync, start_scheduler
 
 log = logging.getLogger(__name__)
@@ -215,6 +216,23 @@ def install_console(app: FastAPI, config_path: Path | None) -> None:
             "running": running is not None and running.is_alive(),
             "last": getattr(request.app.state, "last_sync", None),
         }
+
+    @router.get("/api/presence")
+    def presence_status(request: Request) -> dict:
+        settings = _require(request)
+        cfg = settings.presence
+        return {
+            "enabled": cfg.enabled,
+            "interval_seconds": cfg.interval_seconds,
+            "registry_url": cfg.registry_url,
+            "device_kind": cfg.device_kind,
+            "last": get_last_report(),
+        }
+
+    @router.post("/api/presence/try")
+    def presence_try(request: Request) -> dict:
+        settings = _require(request)
+        return report_presence(settings)
 
     @router.post("/api/restart")
     def restart(request: Request) -> dict:

@@ -18,6 +18,7 @@ _SECRET_FIELDS = (
     ("pull", "minio", "secret_key"),
     ("pull", "http", "api_key"),
     ("edge", "api_key"),
+    ("presence", "api_key"),
     ("console", "password"),
     ("console", "password_hash"),
     ("console", "session_secret"),
@@ -180,6 +181,14 @@ def _check(settings: Settings) -> None:
         raise ConfigError("MongoDB is enabled but the host is empty")
     if settings.pull.minio.enabled and not settings.pull.minio.endpoint:
         raise ConfigError("MinIO is enabled but the endpoint is empty")
+    if settings.presence.enabled:
+        url = (settings.presence.registry_url or "").strip()
+        if not url:
+            raise ConfigError("presence is enabled but registry URL is empty")
+        if not url.startswith(("http://", "https://")):
+            raise ConfigError("presence registry URL must start with http:// or https://")
+        if settings.presence.interval_seconds < 30:
+            raise ConfigError("presence interval must be at least 30 seconds")
 
 
 def _validation_message(exc: ValidationError) -> str:

@@ -26,3 +26,9 @@ Atajo equivalente: `./update.sh` (hace bootstrap y deploy).
 Para revisar credenciales o probar la consola: `./configure.sh` (opción `w`).
 
 La consola queda en `http://<ip>:8088/console`. MinIO guarda sesiones y dumps de base de datos. No hay MongoDB en este stack.
+
+## Arranque automático
+
+Tras un `./deploy.sh` correcto, el script intenta instalar la unidad systemd `nilo-datalake-vm.service` (salvo que pongas `NILO_INSTALL_SYSTEMD=0`). Eso levanta Docker Compose al iniciar el PC y lo reinicia si falla. Los contenedores ya llevan `restart: always`.
+
+En la consola, **Device registry** configura el envío periódico de la IP pública a tu backend (registro tipo DNS de NAS, nilo-node, etc.).

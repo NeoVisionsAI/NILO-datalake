@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -36,6 +37,7 @@ from nilo_datalake.models import isoformat
 from nilo_datalake.paths import is_sha256, sanitize_logical_path, sanitize_session_id, sanitize_site_id
 from nilo_datalake.console.routes import install_console
 from nilo_datalake.service import Context
+from nilo_datalake.presence import report_presence
 from nilo_datalake.sync import start_scheduler
 from nilo_datalake.tracing import begin_trace, bound, end_trace
 
@@ -52,6 +54,13 @@ def create_app(ctx: Context, config_path: Path | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.scheduler = start_scheduler(ctx)
+        presence = ctx.settings.presence
+        if presence.enabled and presence.interval_seconds > 0 and (presence.registry_url or "").strip():
+            threading.Thread(
+                target=lambda: report_presence(ctx.settings),
+                name="presence-initial",
+                daemon=True,
+            ).start()
         yield
         scheduler = getattr(app.state, "scheduler", None)
         if scheduler is not None:
